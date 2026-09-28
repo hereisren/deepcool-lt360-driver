@@ -1,0 +1,19 @@
+# environments / build output
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.pyc
+
+# local captures and scratch
+lsusb_verbose.txt
+preview.jpg
+*.corrupt
+*.tmp
+
+# third-party reference clones (own repos/licenses; not part of this project)
+ref/deepcool-digital-linux/
+ref/deepcool-lm/
+ref/qt-deepcool/

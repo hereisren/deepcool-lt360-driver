@@ -1,0 +1,51 @@
+# Maintainer: Ren <219476143+hereisren@users.noreply.github.com>
+pkgname=deepcool-lt360-git
+_pkgname=deepcool-lt360
+pkgver=0.1.0.r0.g0000000
+pkgrel=1
+pkgdesc="Linux driver, CLI and GUI for the DeepCool LT360 VISION AIO cooler's USB display (3633:002e)"
+arch=('any')
+url="https://github.com/hereisren/deepcool-lt360-driver"
+license=('MIT')
+depends=('python' 'python-pyusb' 'python-pillow' 'python-psutil' 'python-pyqt6' 'systemd')
+makedepends=('python-build' 'python-installer' 'python-wheel' 'git')
+optdepends=('nvidia-utils: GPU telemetry for the sensor overlay on NVIDIA cards')
+provides=('deepcool-lt360')
+conflicts=('deepcool-lt360')
+backup=()
+source=("$_pkgname::git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd "$_pkgname"
+    git describe --long --tags --always | sed 's/^v//;s/-/.r/;s/-g/.g/'
+}
+
+build() {
+    cd "$_pkgname"
+    python -m build --wheel --no-isolation
+}
+
+package() {
+    cd "$_pkgname"
+    python -m installer --destdir="$pkgdir" dist/*.whl
+
+    install -Dm644 udev/99-deepcool-lt360.rules \
+        "$pkgdir/usr/lib/udev/rules.d/99-deepcool-lt360.rules"
+
+    install -Dm644 systemd/deepcool-lt360.service \
+        "$pkgdir/usr/lib/systemd/user/deepcool-lt360.service"
+
+    install -Dm644 desktop/deepcool-lt360.desktop \
+        "$pkgdir/usr/share/applications/deepcool-lt360.desktop"
+    install -Dm644 desktop/deepcool-lt360.svg \
+        "$pkgdir/usr/share/icons/hicolor/scalable/apps/deepcool-lt360.svg"
+
+    install -Dm644 default_config.json \
+        "$pkgdir/usr/share/deepcool-lt360/default_config.json"
+
+    install -Dm644 README.md \
+        "$pkgdir/usr/share/doc/$_pkgname/README.md"
+    install -Dm644 PROTOCOL.md \
+        "$pkgdir/usr/share/doc/$_pkgname/PROTOCOL.md"
+}

@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deepcool-lt360"
+version = "0.2.0"
+description = "Linux driver for the DeepCool LT360 VISION AIO display (VID 3633, PID 002e)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pyusb>=1.2.1",
+    "Pillow>=10.0",
+    "psutil>=5.9",
+]
+
+[project.optional-dependencies]
+gui = ["PyQt6>=6.4"]
+
+[project.scripts]
+lt360d = "lt360d:main"
+lt360ctl = "lt360ctl:main"
+
+[project.gui-scripts]
+lt360-gui = "lt360_gui:main"
+
+[tool.setuptools]
+py-modules = [
+    "lt360d", "lt360ctl", "lt360_common", "lt360_media",
+    "lt360_overlay", "lt360_sensors", "lt360_gui", "lt360_widgets",
+]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.data-files]
+"share/deepcool-lt360/assets/fonts" = [
+    "assets/fonts/JZFSSans-Regular-ad9b52af.otf",
+    "assets/fonts/JZFSSans-SemiBold-c3a8a050.otf",
+    "assets/fonts/JZFSSans-Light-ea2a1e77.otf",
+    "assets/fonts/JZFSSans-Thin-aef36306.otf",
+    "assets/fonts/Pixel-numsymbol VF-66a3e782.ttf",
+    "assets/fonts/SourceHanSansCN-Medium-4f554f68.ttf",
+]

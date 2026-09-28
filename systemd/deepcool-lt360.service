@@ -1,0 +1,13 @@
+[Unit]
+Description=DeepCool LT360 VISION display daemon
+After=default.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/deepcool-lt360/venv/bin/lt360d --config %h/.config/deepcool-lt360/config.json
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=LT360 VISION — For Renmin
+GenericName=Liquid Cooler Display Control
+Comment=Control the DeepCool LT360 VISION cooler's USB display
+Exec=lt360-gui
+Icon=deepcool-lt360
+Terminal=false
+Categories=Utility;HardwareSettings;
+StartupWMClass=lt360_gui
+Keywords=renmin;deepcool;lt360;cooler;aio;rgb;usb display;

@@ -1,0 +1,16 @@
+{
+  "media": null,
+  "brightness": 50,
+  "mode": "horizontal",
+  "mirror": false,
+  "celsius": true,
+  "quality": 95,
+  "engine_mode": "full",
+  "overlay": {
+    "enabled": false,
+    "theme": "codezero",
+    "text_color": null,
+    "primary": "cpu_temp",
+    "secondary": ["gpu_temp", "cpu_load", "time"]
+  }
+}
