@@ -17,3 +17,9 @@ preview.jpg
 ref/deepcool-digital-linux/
 ref/deepcool-lm/
 ref/qt-deepcool/
+
+# makepkg artifacts
+packaging/src/
+packaging/pkg/
+packaging/deepcool-lt360/
+packaging/*.pkg.tar.*
