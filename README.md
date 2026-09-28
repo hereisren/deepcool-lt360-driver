@@ -1,11 +1,13 @@
 # deepcool-lt360
 
+![LT360 VISION — For Renmin GUI](assets/gui-showcase.png)
+
+
 Linux driver, daemon, CLI and native GUI for the DeepCool LT360 VISION AIO cooler's
 USB display (VID `3633`, PID `002e`), reverse-engineered in [`PROTOCOL.md`](PROTOCOL.md).
 No official Linux support exists for this panel — this project drives it entirely
 over `libusb`, no kernel module or vendor tooling required.
 
-![screenshot placeholder](docs/screenshot-gui.png)
 *(screenshot coming soon — run `lt360-gui` to see it live)*
 
 ## Features
@@ -213,3 +215,9 @@ sudo rm -f /etc/udev/rules.d/99-deepcool-lt360.rules
 ## Fonts
 
 `assets/fonts/` contains fonts extracted from the vendor software, included for hardware UI parity. They are not covered by this project's MIT license (see `assets/fonts/README.md`). If they are removed, the overlay automatically falls back to a system sans font (DejaVu/Liberation/Noto) or Pillow's built-in font.
+
+## Development & Credits
+
+Built by **Ren** ([@hereisren](https://github.com/hereisren)) — *For Renmin (人民), For The People*.
+
+Developed through a combination of manual hardware reverse-engineering, live USB/LCD testing, and AI-assisted engineering using **Claude Opus 5.5**, **Gemini 3.1 Pro**, and **Claude Sonnet 5**.
