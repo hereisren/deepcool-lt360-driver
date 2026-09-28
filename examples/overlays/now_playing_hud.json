@@ -1,0 +1,26 @@
+{
+  "_comment": [
+    "Now Playing HUD: CPU/GPU temps on top, a music ticker along the bottom.",
+    "'now_playing' runs a shell command every 2 s. It tries playerctl (MPRIS players), then mpc (MPD),",
+    "and falls back to the text below when nothing is playing or neither tool is installed."
+  ],
+  "custom_sensors": {
+    "now_playing": {
+      "type": "command",
+      "command": "playerctl metadata --format '{{artist}} - {{title}}' 2>/dev/null || mpc current 2>/dev/null",
+      "interval_sec": 2.0,
+      "timeout_sec": 1.5,
+      "fallback": "Nothing playing"
+    }
+  },
+  "elements": [
+    {"type": "rect", "x": 0, "y": 0, "w": 854, "h": 70, "fill": "#0a0518b0"},
+    {"type": "line", "x1": 0, "y1": 70, "x2": 854, "y2": 70, "color": "#a855f7", "width": 2},
+    {"type": "text", "x": 28, "y": 12, "text": "CPU {cpu_temp}°{temp_unit}", "font": "semibold", "size": 40, "color": "#ffffff", "shadow": "#000000aa"},
+    {"type": "text", "x": 826, "y": 12, "text": "GPU {gpu_temp}°{temp_unit}", "font": "semibold", "size": 40, "color": "#22d3ee", "align": "right", "shadow": "#000000aa"},
+    {"type": "text", "x": 427, "y": 18, "text": "{time}", "font": "pixel", "size": 34, "color": "#facc15", "align": "center", "shadow": "#000000aa"},
+
+    {"type": "rect", "x": 24, "y": 410, "w": 806, "h": 52, "fill": "#0a0518cc", "outline": "#a855f7", "radius": 26, "width": 2},
+    {"type": "text", "x": 52, "y": 421, "text": "{now_playing}", "font": "semibold", "size": 26, "color": "#ffffff", "max_width": 750}
+  ]
+}

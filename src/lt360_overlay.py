@@ -59,6 +59,12 @@ THEMES = {
         "text": (235, 225, 255),
         "bar": (12, 6, 20, 165),
     },
+    "custom": {
+        "label": "Custom (customize.json)",
+        "accent": (168, 85, 247),
+        "text": (255, 255, 255),
+        "bar": (12, 6, 20, 165),
+    },
 }
 
 METRIC_LABELS = {
@@ -114,7 +120,13 @@ class OverlayRenderer:
     composite instead of re-rendering fonts on every GIF frame.
     """
 
-    def render_layer(self, size: tuple[int, int], sensor_data: dict, config: dict, celsius: bool) -> Image.Image:
+    def render_layer(self, size: tuple[int, int], sensor_data: dict, config: dict, celsius: bool,
+                     custom=None) -> Image.Image:
+        if config.get("theme") == "custom":
+            import lt360_custom  # lazy: it imports this module for the font paths
+            elements = custom.elements_for(size) if custom is not None else []
+            return lt360_custom.render(size, elements, sensor_data, celsius,
+                                       custom.version if custom is not None else 0)
         theme = THEMES.get(config.get("theme", "codezero"), THEMES["codezero"])
         text_color = tuple(config["text_color"]) if config.get("text_color") else theme["text"]
         accent = theme["accent"]

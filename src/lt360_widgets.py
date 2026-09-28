@@ -715,6 +715,7 @@ THEME_STYLE = {
     "boundary": {"title": "BOUNDARY", "accent": "#ef4444", "accent2": "#ef4444", "sub": "crimson / carbon"},
     "codezero": {"title": "CODE ZERO", "accent": "#06b6d4", "accent2": "#22d3ee", "sub": "cyber cyan"},
     "pixelworld": {"title": "PIXEL WORLD", "accent": "#a855f7", "accent2": "#facc15", "sub": "neon violet / yellow"},
+    "custom": {"title": "CUSTOM HUD", "accent": "#a855f7", "accent2": "#facc15", "sub": "customize.json • Hot-Reload"},
 }
 METRIC_SHORT = {"cpu_temp": "CPU", "gpu_temp": "GPU", "cpu_load": "CPU%", "gpu_load": "GPU%", "time": "TIME", "off": ""}
 
@@ -739,13 +740,14 @@ class ThemeCard(QWidget):
         super().__init__()
         self.key = key
         self.style = THEME_STYLE[key]
+        self.setToolTip(self.style["sub"])
         self.selected = False
         self._hover = False
         self.primary = "cpu_temp"
         self.secondary = ["gpu_temp", "cpu_load", "time"]
         self.sensors: dict = {}
         self.celsius = True
-        self.setMinimumSize(150, 150)
+        self.setMinimumSize(100, 150)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setFixedHeight(158)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -787,6 +789,11 @@ class ThemeCard(QWidget):
         bgg.setColorAt(0, QColor("#1a1230"))
         bgg.setColorAt(1, QColor("#08131a"))
         p.fillRect(scr, QBrush(bgg))
+        if self.key == "custom":
+            self._paint_custom_preview(p, scr, acc, acc2)
+            p.restore()
+            self._paint_footer(p, r, acc, acc2)
+            return
         bar_h = max(30.0, scr.height() * 0.42)
         bar = QRectF(scr.left(), scr.bottom() - bar_h, scr.width(), bar_h)
         p.fillRect(bar, QColor(6, 6, 10, 215))
@@ -814,16 +821,44 @@ class ThemeCard(QWidget):
             p.setPen(acc2)
             p.drawText(QRectF(x, bar.bottom() - 13, slot, 11), Qt.AlignmentFlag.AlignHCenter, METRIC_SHORT.get(m, ""))
         p.restore()
+        self._paint_footer(p, r, acc, acc2)
 
+    @staticmethod
+    def _paint_custom_preview(p, scr, acc, acc2):
+        """Stylised HUD: two translucent pills with meter bars, a gold clock chip and a JSON hint."""
+        p.setPen(QPen(qc(acc, 220), 1.2))
+        p.setBrush(qc(QColor(12, 6, 20), 200))
+        pill_w, pill_h = scr.width() * 0.42, scr.height() * 0.24
+        for i, (col, frac) in enumerate(((acc, 0.7), (acc2, 0.45))):
+            pill = QRectF(scr.left() + 7 + i * (pill_w + 6), scr.top() + 7, pill_w, pill_h)
+            p.setPen(QPen(qc(col, 220), 1.2))
+            p.setBrush(qc(QColor(12, 6, 20), 200))
+            p.drawRoundedRect(pill, pill_h / 2, pill_h / 2)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(col)
+            p.drawRoundedRect(QRectF(pill.left() + 8, pill.center().y() - 2, (pill.width() - 16) * frac, 4), 2, 2)
+        chip = QRectF(scr.right() - 50, scr.bottom() - 22, 43, 15)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(qc(acc2, 230))
+        p.drawRoundedRect(chip, 5, 5)
+        p.setPen(QColor("#1a1230"))
+        p.setFont(font(6.5, QFont.Weight.Bold, PIXEL))
+        p.drawText(chip, Qt.AlignmentFlag.AlignCenter, "12:34")
+        p.setPen(qc(acc, 230))
+        p.setFont(font(9, QFont.Weight.Bold, PIXEL))
+        p.drawText(QRectF(scr.left() + 9, scr.center().y() - 6, scr.width() * 0.6, 30),
+                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, "{ }")
+
+    def _paint_footer(self, p, r, acc, acc2):
         p.setPen(QColor(TEXT) if self.selected else qc(MUTED))
-        p.setFont(font(9, QFont.Weight.Bold, spacing=2))
-        p.drawText(QRectF(r.left() + 12, r.bottom() - 32, r.width() - 24, 18), Qt.AlignmentFlag.AlignVCenter, self.style["title"])
+        p.setFont(font(7, QFont.Weight.Bold, spacing=0.6))
+        p.drawText(QRectF(r.left() + 10, r.bottom() - 32, r.width() - 40, 18), Qt.AlignmentFlag.AlignVCenter, self.style["title"])
         p.setBrush(acc)
         p.setPen(Qt.PenStyle.NoPen)
-        p.drawEllipse(QPointF(r.right() - 16, r.bottom() - 23), 4, 4)
+        p.drawEllipse(QPointF(r.right() - 11, r.bottom() - 23), 3, 3)
         if self.style["accent2"] != self.style["accent"]:
             p.setBrush(acc2)
-            p.drawEllipse(QPointF(r.right() - 29, r.bottom() - 23), 4, 4)
+            p.drawEllipse(QPointF(r.right() - 21, r.bottom() - 23), 3, 3)
 
 
 class ReadoutTile(QWidget):

@@ -158,6 +158,8 @@ class SensorReader:
     def read(self) -> dict:
         data = {"time": time.strftime("%H:%M:%S"), "date": time.strftime("%Y-%m-%d")}
         data.update(_read_cpu())
+        mem = psutil.virtual_memory()
+        data.update({"ram_percent": mem.percent, "ram_used": mem.used / 2**30, "ram_total": mem.total / 2**30})
         if self._gpu is not None:
             data.update(self._gpu.read())
         else:

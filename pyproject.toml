@@ -27,12 +27,18 @@ lt360-gui = "lt360_gui:main"
 [tool.setuptools]
 py-modules = [
     "lt360d", "lt360ctl", "lt360_common", "lt360_media",
-    "lt360_overlay", "lt360_sensors", "lt360_gui", "lt360_widgets",
+    "lt360_overlay", "lt360_sensors", "lt360_gui", "lt360_widgets", "lt360_custom",
 ]
 package-dir = {"" = "src"}
 include-package-data = true
 
 [tool.setuptools.data-files]
+"share/deepcool-lt360/examples/overlays" = [
+    "examples/overlays/renmin_cyberpunk.json",
+    "examples/overlays/minimal_pills.json",
+    "examples/overlays/now_playing_hud.json",
+    "examples/overlays/full_telemetry_grid.json",
+]
 "share/deepcool-lt360/assets/fonts" = [
     "assets/fonts/JZFSSans-Regular-ad9b52af.otf",
     "assets/fonts/JZFSSans-SemiBold-c3a8a050.otf",

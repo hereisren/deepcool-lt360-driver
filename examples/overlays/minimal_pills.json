@@ -1,0 +1,19 @@
+{
+  "_comment": [
+    "Minimal Pills: four small translucent pills in the corners; the center of your GIF/video stays clear.",
+    "Move a pill by changing its rect x/y and its text x/y together."
+  ],
+  "elements": [
+    {"type": "rect", "x": 16, "y": 16, "w": 170, "h": 48, "fill": "#000000a0", "outline": "#a855f7", "radius": 24, "width": 2},
+    {"type": "text", "x": 101, "y": 22, "text": "CPU {cpu_temp}°", "font": "semibold", "size": 28, "color": "#ffffff", "align": "center"},
+
+    {"type": "rect", "x": 668, "y": 16, "w": 170, "h": 48, "fill": "#000000a0", "outline": "#22d3ee", "radius": 24, "width": 2},
+    {"type": "text", "x": 753, "y": 22, "text": "GPU {gpu_temp}°", "font": "semibold", "size": 28, "color": "#ffffff", "align": "center"},
+
+    {"type": "rect", "x": 16, "y": 416, "w": 170, "h": 48, "fill": "#000000a0", "outline": "#facc15", "radius": 24, "width": 2},
+    {"type": "text", "x": 101, "y": 422, "text": "RAM {ram_percent}%", "font": "semibold", "size": 28, "color": "#ffffff", "align": "center"},
+
+    {"type": "rect", "x": 668, "y": 416, "w": 170, "h": 48, "fill": "#000000a0", "outline": "#ffffff88", "radius": 24, "width": 2},
+    {"type": "text", "x": 753, "y": 422, "text": "{time}", "font": "pixel", "size": 28, "color": "#ffffff", "align": "center"}
+  ]
+}

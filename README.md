@@ -105,8 +105,84 @@ lt360ctl status
 ```
 
 Overlay themes: `boundary` (red), `codezero` (cyan/blue), `pixelworld`
-(purple — great for RGB builds). Metrics: `cpu_temp`, `gpu_temp`, `cpu_load`,
-`gpu_load`, `time`, `off`.
+(purple — great for RGB builds), `custom` (your own `customize.json`, below).
+Metrics: `cpu_temp`, `gpu_temp`, `cpu_load`, `gpu_load`, `time`, `off`.
+
+## Custom Overlays & Telemetry (`customize.json`)
+
+`~/.config/deepcool-lt360/customize.json` lets you design your own overlay and
+add your own telemetry without touching the driver's code. It is created from a
+default on first run, and the daemon **hot-reloads it within a second of every
+save**. A typo never blanks the screen: the error is logged
+(`journalctl --user -u deepcool-lt360 -f`, shown in the GUI, and in
+`lt360ctl status` under `custom.error`) and the last valid layout stays up.
+
+```sh
+lt360ctl customize --edit                       # print path, switch to the "custom" theme, open $EDITOR
+lt360ctl customize --list                       # bundled presets
+lt360ctl customize --preset renmin_cyberpunk    # copy a preset in (old file kept as customize.json.bak)
+lt360ctl customize --reset                      # back to the default layout
+```
+
+In the GUI pick the **CUSTOM HUD** card, then **Open customize.json** or
+**Load Preset…**. Presets live in `examples/overlays/` (`renmin_cyberpunk`,
+`minimal_pills`, `now_playing_hud`, `full_telemetry_grid`); copy-paste widgets
+from them into your own file.
+
+### Layout
+
+```json
+{
+  "custom_sensors": { "...": "..." },
+  "elements": [ { "type": "text", "...": "..." } ],
+  "elements_vertical": [ "optional: used instead of elements when the panel is in vertical mode" ]
+}
+```
+
+The canvas is **854×480** (horizontal) or **480×854** (vertical); `x`/`y` are
+top-left pixel coordinates. Colors are `#RRGGBB` or `#RRGGBBAA` (AA = alpha, so
+`#000000aa` is translucent black). Elements draw in list order. Keys starting
+with `_` (e.g. `"_comment"`) are ignored, as are whole lines starting with `//`.
+
+| type | keys |
+|------|------|
+| `rect` / `box` | `x y w h`, `fill`, `outline`, `radius`, `width` |
+| `text` | `x y`, `text`, `font` (`pixel`, `sans`, `semibold`, `light`, `thin` or a `.ttf` path), `size`, `color`, `align` (`left`/`center`/`right`), `shadow`, `max_width` (truncates with …) |
+| `bar` | `x y w h`, `source`, `min`, `max`, `fill`, `bg`, `outline`, `radius` |
+| `line` | `x1 y1 x2 y2`, `color`, `width` |
+
+Text variables (`"CPU {cpu_temp}°{temp_unit} | {my_sensor}"`): `cpu_temp`,
+`gpu_temp` (in your °C/°F setting), `cpu_load`, `gpu_load`, `cpu_freq` (MHz),
+`cpu_freq_ghz`, `gpu_power` (W), `gpu_clock`, `ram_percent`, `ram_used`,
+`ram_total` (GB), `time`, `date`, `temp_unit`, plus every custom sensor.
+Unavailable readings show `N/A`. A bar's `source` is any of the numeric ones
+above or a custom sensor (temperatures are in °C for bars).
+
+### Custom sensors
+
+```json
+"custom_sensors": {
+  "nvme_temp": { "type": "sysfs", "path": "/sys/class/hwmon/hwmon1/temp1_input",
+                 "scale": 0.001, "unit": "°C" },
+  "now_playing": { "type": "command",
+                   "command": "playerctl metadata --format '{{artist}} - {{title}}'",
+                   "interval_sec": 2.0, "timeout_sec": 1.5, "fallback": "Nothing playing" },
+  "vram": { "type": "command", "command": "cat /sys/class/drm/card1/device/mem_info_vram_used",
+            "scale": 9.5367e-7, "decimals": 1, "unit": "MB", "interval_sec": 2 }
+}
+```
+
+- `sysfs` reads the first number in any `/sys` or `/proc` file, multiplied by `scale` (default 1).
+- `command` runs through the shell every `interval_sec` (minimum 0.5) in its own
+  thread, with a `timeout_sec` (max 10). The **first line** of stdout is the value;
+  a non-zero exit, timeout or empty output shows `fallback` (default empty).
+  Commands only run while the custom theme is on screen.
+- With `scale` the output is treated as a number (`decimals` sets the precision);
+  otherwise it is shown as text. `unit` is appended (`"GB"` gets a space, `"°C"` doesn't).
+- Use it as `{name}` (with unit) or `{name_value}` (without), and as a bar `source`.
+- Names must be identifiers and can't reuse a built-in name.
+
+The commands run as you, from a file only you can edit; only paste layouts you trust.
 
 ## Protocol overview
 

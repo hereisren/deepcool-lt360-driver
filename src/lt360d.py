@@ -29,6 +29,7 @@ from lt360_common import (
     DEFAULT_ENGINE_MODE, ENGINE_MODES, EP_CMD, EP_IMAGE, INTERFACE, MODE_NAMES, PID, VID,
     canvas_size, cmd_settings, cmd_stream_start, jpeg_packets, rotate_and_encode, rotation_deg,
 )
+from lt360_custom import CustomManager, signature as custom_signature
 from lt360_media import PERF_MAX_FRAMES, Reel, load_reel
 from lt360_overlay import OverlayRenderer, THEMES, default_overlay_config, format_metric
 from lt360_sensors import SensorReader
@@ -107,6 +108,7 @@ class State:
         self.overlay.update(config.get("overlay", {}))
         self.sensor_data: dict = {}
         self.overlay_layer = None  # RGBA layer, rebuilt off-lock by sensor_loop
+        self.custom = CustomManager()  # ~/.config/deepcool-lt360/customize.json, hot-reloaded by sensor_loop
         self.overlay_generation = 0  # bumped whenever the rendered overlay pixels change
         self.overlay_wake = threading.Event()  # nudges sensor_loop after a config change
         self.frame_wake = threading.Event()  # nudges frame_loop out of its sleep when something changed
@@ -255,6 +257,7 @@ class State:
                 "celsius": self.celsius,
                 "overlay": dict(self.overlay),
                 "sensors": dict(self.sensor_data),
+                "custom": {"path": self.custom.path, "error": self.custom.error},
                 "stream_fps": round(self.stream_fps, 1),
                 "frames_sent": self.frames_sent,
                 "packets_sent": self.packets_sent,
@@ -315,12 +318,15 @@ class Device:
         self._close()
 
 
-def _overlay_key(state: State) -> tuple | None:
+def _overlay_key(state: State, custom: CustomManager) -> tuple | None:
     """Everything that changes what the overlay layer looks like, incl. the formatted numbers."""
     with state.lock:
         if not state.overlay["enabled"]:
             return None
         cfg, data, celsius, dm = dict(state.overlay), dict(state.sensor_data), state.celsius, state.display_model
+    if cfg.get("theme") == "custom":
+        sig = custom_signature(custom.elements_for(canvas_size(dm)), data, celsius)
+        return (dm, celsius, "custom", custom.version, sig)
     metrics = [cfg.get("primary")] + list(cfg.get("secondary", []))
     text = tuple(format_metric(m, data, celsius) for m in metrics)
     return (dm, celsius, json.dumps(cfg, sort_keys=True), text)
@@ -332,20 +338,27 @@ def sensor_loop(state: State, stop_event: threading.Event):
     """
     reader = SensorReader()
     renderer = OverlayRenderer()
+    custom = state.custom
     last_key = None
     while not stop_event.is_set():
         state.overlay_wake.clear()
         try:
+            custom.poll()  # 1 Hz mtime check; a reload bumps custom.version, which changes the overlay key
+            with state.lock:
+                using_custom = bool(state.overlay["enabled"]) and state.overlay.get("theme") == "custom"
+            custom.set_active(using_custom)
             data = reader.read()
+            if using_custom:
+                data["custom"] = custom.sensor_values()
             with state.lock:
                 state.sensor_data = data
-            key = _overlay_key(state)
+            key = _overlay_key(state, custom)
             if key is None:
                 last_key = None
             elif key != last_key:
                 with state.lock:
                     cfg, celsius, dm = dict(state.overlay), state.celsius, state.display_model
-                layer = renderer.render_layer(canvas_size(dm), data, cfg, celsius)
+                layer = renderer.render_layer(canvas_size(dm), data, cfg, celsius, custom)
                 with state.lock:
                     state.overlay_layer = layer
                     state.overlay_generation += 1

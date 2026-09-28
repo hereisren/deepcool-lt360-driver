@@ -28,6 +28,10 @@ else
     echo "    (existing config.json kept - your saved media/settings are untouched)"
 fi
 
+echo "==> Seeding $CONFIG_DIR/customize.json (custom overlay, hot-reloaded)"
+# Never overwritten: this is the user's hand-edited file. Presets: lt360ctl customize --list
+"$VENV/bin/python" -c "import lt360_custom as c; print('    created' if c.seed_default() else '    (existing customize.json kept)')"
+
 echo "==> Installing udev rule (requires sudo)"
 if [ -f "$UDEV_RULE_DST" ] && cmp -s "$UDEV_RULE_SRC" "$UDEV_RULE_DST"; then
     echo "    (already installed)"
@@ -91,4 +95,5 @@ systemctl --user is-active --quiet deepcool-lt360.service \
 echo "==> Done."
 echo "    CLI:    lt360ctl status   (~/.local/bin is on PATH after a new shell)"
 echo "    GUI:    lt360-gui         (also in your app launcher as 'LT360 VISION — For Renmin')"
+echo "    Custom: lt360ctl customize --edit   (presets: lt360ctl customize --preset renmin_cyberpunk)"
 echo "    Logs:   journalctl --user -u deepcool-lt360 -f"

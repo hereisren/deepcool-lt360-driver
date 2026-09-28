@@ -18,9 +18,10 @@ from PyQt6.QtCore import QObject, QRunnable, Qt, QThread, QThreadPool, QTimer, p
 from PyQt6.QtGui import QFontDatabase, QIcon, QImage, QTransform
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
-    QMainWindow, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QMainWindow, QMenu, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
+import lt360_custom as C
 import lt360_widgets as W
 
 DEFAULT_SOCKET_PATH = "/tmp/lt360.sock"
@@ -35,7 +36,7 @@ STATUS_INTERVAL = 0.7
 STATUS_INTERVAL_HIDDEN = 3.0
 TOUCH_HOLD = 1.5          # seconds a user-touched control ignores polled status (prevents flicker-back)
 
-THEMES = ["boundary", "codezero", "pixelworld"]
+THEMES = ["boundary", "codezero", "pixelworld", "custom"]
 METRICS = ["cpu_temp", "gpu_temp", "cpu_load", "gpu_load", "time", "off"]
 ENGINE_NOTES = {
     "performance": "Pre-baked USB buffers in RAM: under 0.5% CPU, best for GIFs and short loops. "
@@ -293,6 +294,7 @@ class MainWindow(QMainWindow):
         self._celsius = True
         self._sensors: dict = {}
         self._overlay_cfg: dict = {}
+        self._custom_error: str | None = None
         self._service_busy = False
 
         self.worker = IpcWorker()
@@ -414,6 +416,22 @@ class MainWindow(QMainWindow):
             row.addWidget(tc)
         lay.addLayout(row)
 
+        actions = QHBoxLayout()
+        actions.setSpacing(10)
+        open_btn = QPushButton("Open customize.json")
+        open_btn.clicked.connect(self._open_customize)
+        self.preset_btn = QPushButton("Load Preset…")
+        self.preset_menu = QMenu(self.preset_btn)
+        self.preset_menu.aboutToShow.connect(self._fill_preset_menu)
+        self.preset_btn.setMenu(self.preset_menu)
+        self.custom_status = QLabel("")
+        self.custom_status.setWordWrap(True)
+        actions.addWidget(open_btn)
+        actions.addWidget(self.preset_btn)
+        actions.addStretch()
+        lay.addLayout(actions)
+        lay.addWidget(self.custom_status)
+
         lay.addWidget(field_label("LIVE TELEMETRY"))
         tiles = QHBoxLayout()
         tiles.setSpacing(8)
@@ -437,6 +455,40 @@ class MainWindow(QMainWindow):
             grid.addWidget(combo, (i // 2) * 2 + 1, i % 2)
         lay.addLayout(grid)
         return frame
+
+    def _fill_preset_menu(self):
+        self.preset_menu.clear()
+        presets = C.list_presets()
+        for name in presets:
+            self.preset_menu.addAction(name.replace("_", " ").title()).triggered.connect(
+                lambda _=False, n=name: self._apply_preset(n))
+        if not presets:
+            self.preset_menu.addAction("No presets found").setEnabled(False)
+
+    def _apply_preset(self, name: str):
+        def done(result, n=name):
+            if isinstance(result, Exception):
+                self.custom_status.setText(f"Preset failed: {result}")
+                return
+            self.custom_status.setText(f"Loaded preset: {n} (previous saved as .bak)")
+            self._on_theme_clicked("custom")
+        run_async(self, lambda: C.apply_preset(name), done)
+
+    def _open_customize(self):
+        def launch():
+            C.seed_default()
+            editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
+            # GUI has no terminal: a terminal $EDITOR would die instantly, so prefer the desktop handler.
+            subprocess.Popen(["xdg-open", C.CUSTOM_PATH], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return editor
+
+        def done(result):
+            if isinstance(result, Exception):
+                self.custom_status.setText(f"Could not open editor: {result}")
+                return
+            self.custom_status.setText("Opened customize.json — save to hot-reload")
+            self._on_theme_clicked("custom")
+        run_async(self, launch, done)
 
     def _metric_combo(self) -> QComboBox:
         c = QComboBox()
@@ -717,6 +769,7 @@ class MainWindow(QMainWindow):
                     combo.setCurrentIndex(METRICS.index(val))
 
         self._sensors = st.get("sensors", {})
+        self._custom_error = (st.get("custom") or {}).get("error")
         for key, tile in self.tiles.items():
             tile.set_value(W.format_metric(key, self._sensors, self._celsius) if key != "time"
                            else str(self._sensors.get("time", "--:--:--")))
@@ -735,6 +788,11 @@ class MainWindow(QMainWindow):
 
     def _refresh_theme_cards(self):
         cfg = self._overlay_cfg
+        err = self._custom_error
+        if err:
+            self.custom_status.setText(f"customize.json error (last valid layout kept): {err}")
+        elif self.custom_status.text().startswith("customize.json error"):
+            self.custom_status.setText("")
         for key, tc in self.theme_cards.items():
             tc.set_state(cfg.get("theme") == key,
                          cfg.get("primary", "cpu_temp"), cfg.get("secondary", []), self._sensors, self._celsius)

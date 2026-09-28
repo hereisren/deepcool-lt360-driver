@@ -7,6 +7,7 @@ Examples:
     lt360ctl mode horizontal
     lt360ctl mirror on
     lt360ctl engine full
+    lt360ctl customize --preset renmin_cyberpunk
     lt360ctl status
 """
 import argparse
@@ -42,6 +43,51 @@ def bool_arg(value: str) -> bool:
     raise argparse.ArgumentTypeError(f"expected on/off, got {value!r}")
 
 
+def customize(args):
+    import shlex
+    import subprocess
+
+    import lt360_custom as C
+
+    if args.list:
+        print("\n".join(C.list_presets()) or "no presets found in " + C.PRESETS_DIR)
+        return
+    try:
+        if args.preset:
+            C.apply_preset(args.preset)
+            print(f"applied preset '{args.preset}' (previous file saved as customize.json.bak)")
+        elif args.reset:
+            C.reset_default()
+            print("restored default customize.json (previous file saved as customize.json.bak)")
+        else:
+            C.seed_default()
+    except (OSError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)
+    print(C.CUSTOM_PATH)
+
+    if os.path.exists(args.socket):  # switching the theme needs the daemon; the file work above does not
+        response = send(args.socket, {"action": "set_overlay", "value": {"theme": "custom", "enabled": True}})
+        if not response.get("ok"):
+            print(f"warning: could not activate the custom theme: {response.get('error')}", file=sys.stderr)
+        else:
+            err = response.get("status", {}).get("custom", {}).get("error")
+            print("custom overlay theme active (edits hot-reload within ~1 s)")
+            if err:
+                print(f"warning: customize.json currently invalid, last good layout stays: {err}", file=sys.stderr)
+    else:
+        print(f"warning: daemon socket not found at {args.socket}; theme not switched", file=sys.stderr)
+
+    if args.edit:
+        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
+        cmd = shlex.split(editor) + [C.CUSTOM_PATH] if editor else ["xdg-open", C.CUSTOM_PATH]
+        try:
+            subprocess.call(cmd)
+        except OSError as e:
+            print(f"error: cannot launch {cmd[0]}: {e}", file=sys.stderr)
+            sys.exit(1)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Control the DeepCool LT360 VISION daemon")
     ap.add_argument("--socket", default=DEFAULT_SOCKET_PATH)
@@ -68,9 +114,15 @@ def main():
 
     p = sub.add_parser("overlay", help="configure the sensor telemetry overlay")
     p.add_argument("enabled", type=bool_arg)
-    p.add_argument("--theme", choices=["boundary", "codezero", "pixelworld"])
+    p.add_argument("--theme", choices=["boundary", "codezero", "pixelworld", "custom"])
     p.add_argument("--primary", choices=["cpu_temp", "gpu_temp", "cpu_load", "gpu_load", "time", "off"])
     p.add_argument("--secondary", help="comma-separated list, e.g. gpu_temp,cpu_load,time")
+
+    p = sub.add_parser("customize", help="hot-reloading custom overlay file (customize.json)")
+    p.add_argument("--edit", action="store_true", help="open the file in $EDITOR")
+    p.add_argument("--preset", metavar="NAME", help="copy examples/overlays/NAME.json into customize.json")
+    p.add_argument("--reset", action="store_true", help="restore the default customize.json")
+    p.add_argument("--list", action="store_true", help="list bundled presets")
 
     p = sub.add_parser("preview", help="save the last streamed frame as a JPEG")
     p.add_argument("path", nargs="?", default="preview.jpg")
@@ -78,6 +130,10 @@ def main():
     sub.add_parser("status", help="show current daemon state")
 
     args = ap.parse_args()
+
+    if args.command == "customize":
+        customize(args)
+        return
 
     if args.command == "media":
         request = {"action": "set_media", "path": os.path.abspath(args.path)}

@@ -1,0 +1,49 @@
+{
+  "_comment": [
+    "Full Telemetry Grid: hardware-monitor dashboard. 2x3 tiles: CPU temp / load / freq, GPU temp / load / power,",
+    "plus a RAM bar and clock. Fully opaque-ish background: best with a dark or blurred media file.",
+    "GPU power/freq show N/A on hardware that doesn't report them."
+  ],
+  "elements": [
+    {"type": "rect", "x": 0, "y": 0, "w": 854, "h": 480, "fill": "#05030bd0"},
+    {"type": "text", "x": 28, "y": 14, "text": "SYSTEM MONITOR", "font": "light", "size": 22, "color": "#a855f7"},
+    {"type": "text", "x": 826, "y": 10, "text": "{time}", "font": "pixel", "size": 30, "color": "#facc15", "align": "right"},
+    {"type": "line", "x1": 28, "y1": 52, "x2": 826, "y2": 52, "color": "#a855f7", "width": 2},
+
+    {"type": "rect", "x": 28, "y": 68, "w": 254, "h": 150, "fill": "#150c2acc", "outline": "#a855f7", "radius": 12, "width": 2},
+    {"type": "text", "x": 44, "y": 76, "text": "CPU TEMP", "font": "light", "size": 16, "color": "#c4b5fd"},
+    {"type": "text", "x": 44, "y": 98, "text": "{cpu_temp}°{temp_unit}", "font": "semibold", "size": 56, "color": "#ffffff"},
+    {"type": "bar", "x": 44, "y": 190, "w": 222, "h": 10, "source": "cpu_temp", "min": 30, "max": 95, "fill": "#a855f7", "bg": "#1a1625", "radius": 5},
+
+    {"type": "rect", "x": 300, "y": 68, "w": 254, "h": 150, "fill": "#150c2acc", "outline": "#a855f7", "radius": 12, "width": 2},
+    {"type": "text", "x": 316, "y": 76, "text": "CPU LOAD", "font": "light", "size": 16, "color": "#c4b5fd"},
+    {"type": "text", "x": 316, "y": 98, "text": "{cpu_load}%", "font": "semibold", "size": 56, "color": "#ffffff"},
+    {"type": "bar", "x": 316, "y": 190, "w": 222, "h": 10, "source": "cpu_load", "min": 0, "max": 100, "fill": "#a855f7", "bg": "#1a1625", "radius": 5},
+
+    {"type": "rect", "x": 572, "y": 68, "w": 254, "h": 150, "fill": "#150c2acc", "outline": "#a855f7", "radius": 12, "width": 2},
+    {"type": "text", "x": 588, "y": 76, "text": "CPU FREQ", "font": "light", "size": 16, "color": "#c4b5fd"},
+    {"type": "text", "x": 588, "y": 98, "text": "{cpu_freq_ghz}", "font": "semibold", "size": 56, "color": "#ffffff"},
+    {"type": "text", "x": 588, "y": 162, "text": "GHz", "font": "light", "size": 20, "color": "#c4b5fd"},
+    {"type": "bar", "x": 588, "y": 190, "w": 222, "h": 10, "source": "cpu_freq", "min": 400, "max": 5500, "fill": "#a855f7", "bg": "#1a1625", "radius": 5},
+
+    {"type": "rect", "x": 28, "y": 232, "w": 254, "h": 150, "fill": "#0a1a24cc", "outline": "#22d3ee", "radius": 12, "width": 2},
+    {"type": "text", "x": 44, "y": 240, "text": "GPU TEMP", "font": "light", "size": 16, "color": "#a5f3fc"},
+    {"type": "text", "x": 44, "y": 262, "text": "{gpu_temp}°{temp_unit}", "font": "semibold", "size": 56, "color": "#ffffff"},
+    {"type": "bar", "x": 44, "y": 354, "w": 222, "h": 10, "source": "gpu_temp", "min": 30, "max": 95, "fill": "#22d3ee", "bg": "#1a1625", "radius": 5},
+
+    {"type": "rect", "x": 300, "y": 232, "w": 254, "h": 150, "fill": "#0a1a24cc", "outline": "#22d3ee", "radius": 12, "width": 2},
+    {"type": "text", "x": 316, "y": 240, "text": "GPU LOAD", "font": "light", "size": 16, "color": "#a5f3fc"},
+    {"type": "text", "x": 316, "y": 262, "text": "{gpu_load}%", "font": "semibold", "size": 56, "color": "#ffffff"},
+    {"type": "bar", "x": 316, "y": 354, "w": 222, "h": 10, "source": "gpu_load", "min": 0, "max": 100, "fill": "#22d3ee", "bg": "#1a1625", "radius": 5},
+
+    {"type": "rect", "x": 572, "y": 232, "w": 254, "h": 150, "fill": "#0a1a24cc", "outline": "#22d3ee", "radius": 12, "width": 2},
+    {"type": "text", "x": 588, "y": 240, "text": "GPU POWER", "font": "light", "size": 16, "color": "#a5f3fc"},
+    {"type": "text", "x": 588, "y": 262, "text": "{gpu_power}", "font": "semibold", "size": 56, "color": "#ffffff"},
+    {"type": "text", "x": 588, "y": 326, "text": "W", "font": "light", "size": 20, "color": "#a5f3fc"},
+    {"type": "bar", "x": 588, "y": 354, "w": 222, "h": 10, "source": "gpu_power", "min": 0, "max": 300, "fill": "#22d3ee", "bg": "#1a1625", "radius": 5},
+
+    {"type": "text", "x": 28, "y": 400, "text": "RAM  {ram_used} / {ram_total} GB", "font": "light", "size": 20, "color": "#facc15"},
+    {"type": "text", "x": 826, "y": 400, "text": "{ram_percent}%", "font": "semibold", "size": 20, "color": "#facc15", "align": "right"},
+    {"type": "bar", "x": 28, "y": 434, "w": 798, "h": 14, "source": "ram_percent", "min": 0, "max": 100, "fill": "#facc15", "bg": "#1a1625", "radius": 7}
+  ]
+}
