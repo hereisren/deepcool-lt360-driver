@@ -29,6 +29,7 @@ from lt360_common import (
     DEFAULT_ENGINE_MODE, ENGINE_MODES, EP_CMD, EP_IMAGE, INTERFACE, MODE_NAMES, PID, VID,
     canvas_size, cmd_settings, cmd_stream_start, jpeg_packets, rotate_and_encode, rotation_deg,
 )
+from lt360_ipc import default_socket_path
 from lt360_custom import CustomManager, signature as custom_signature
 from lt360_media import PERF_MAX_FRAMES, Reel, load_reel
 from lt360_overlay import OverlayRenderer, THEMES, default_overlay_config, format_metric
@@ -36,7 +37,7 @@ from lt360_sensors import SensorReader
 
 log = logging.getLogger("lt360d")
 
-DEFAULT_SOCKET_PATH = "/tmp/lt360.sock"
+DEFAULT_SOCKET_PATH = default_socket_path()
 
 
 USER_CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".config", "deepcool-lt360", "config.json")
@@ -663,10 +664,14 @@ def main():
 
     if os.path.exists(args.socket):
         os.remove(args.socket)
-    server = IPCServer(args.socket, IPCHandler)
+    old_umask = os.umask(0o177)  # socket is created 0600: no window where other users can connect
+    try:
+        server = IPCServer(args.socket, IPCHandler)
+    finally:
+        os.umask(old_umask)
+    os.chmod(args.socket, 0o600)  # owner only: the socket can drive the cooler and returns screen previews
     server.state = state
     server.device = device
-    os.chmod(args.socket, 0o666)
 
     ipc_thread = threading.Thread(target=server.serve_forever, daemon=True)
     ipc_thread.start()

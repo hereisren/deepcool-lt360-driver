@@ -22,7 +22,7 @@ over `libusb`, no kernel module or vendor tooling required.
 
 | File | Purpose |
 |---|---|
-| `src/lt360d.py` | Background daemon. Streams media to the panel, runs the sensor poll + overlay compositor, and listens on a Unix socket (`/tmp/lt360.sock`) for commands. |
+| `src/lt360d.py` | Background daemon. Streams media to the panel, runs the sensor poll + overlay compositor, and listens on a Unix socket (`$XDG_RUNTIME_DIR/lt360.sock`, mode 0600) for commands. |
 | `src/lt360ctl.py` | Scriptable CLI to control the running daemon. |
 | `src/lt360_gui.py` | Native PyQt6 desktop app — live preview, media picker, hardware & overlay controls, service management. |
 | `src/lt360_sensors.py` | CPU (`psutil`/`k10temp`/`zenpower`/`coretemp`) and GPU (`amdgpu` hwmon or `nvidia-smi`) telemetry reader. |

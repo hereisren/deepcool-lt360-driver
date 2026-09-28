@@ -16,7 +16,9 @@ import os
 import socket
 import sys
 
-DEFAULT_SOCKET_PATH = "/tmp/lt360.sock"
+from lt360_ipc import default_socket_path
+
+DEFAULT_SOCKET_PATH = default_socket_path()
 
 
 def send(sock_path: str, request: dict) -> dict:

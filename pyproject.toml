@@ -27,7 +27,7 @@ lt360-gui = "lt360_gui:main"
 [tool.setuptools]
 py-modules = [
     "lt360d", "lt360ctl", "lt360_common", "lt360_media",
-    "lt360_overlay", "lt360_sensors", "lt360_gui", "lt360_widgets", "lt360_custom",
+    "lt360_overlay", "lt360_sensors", "lt360_gui", "lt360_widgets", "lt360_custom", "lt360_ipc",
 ]
 package-dir = {"" = "src"}
 include-package-data = true

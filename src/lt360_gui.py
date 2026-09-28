@@ -22,9 +22,10 @@ from PyQt6.QtWidgets import (
 )
 
 import lt360_custom as C
+from lt360_ipc import default_socket_path
 import lt360_widgets as W
 
-DEFAULT_SOCKET_PATH = "/tmp/lt360.sock"
+DEFAULT_SOCKET_PATH = default_socket_path()
 SERVICE_NAME = "deepcool-lt360.service"
 APP_TITLE = "LT360 VISION — For Renmin"
 MEDIA_EXTS = {".gif", ".mp4", ".webm", ".png", ".jpg", ".jpeg", ".webp"}

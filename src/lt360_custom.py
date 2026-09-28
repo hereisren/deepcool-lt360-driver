@@ -232,7 +232,10 @@ def _read_sysfs(sdef: dict) -> tuple[str, float | None] | None:
 
 
 def _run_command(sdef: dict) -> tuple[str, float | None] | None:
-    timeout = min(float(sdef.get("timeout_sec", 2.0)), MAX_COMMAND_TIMEOUT)
+    try:
+        timeout = min(max(float(sdef.get("timeout_sec", 2.0)), 0.1), MAX_COMMAND_TIMEOUT)
+    except (TypeError, ValueError):
+        timeout = 2.0
     try:
         out = subprocess.run(sdef["command"], shell=True, capture_output=True, text=True, timeout=timeout,
                              stdin=subprocess.DEVNULL)
@@ -248,13 +251,20 @@ class _CommandWorker(threading.Thread):
     def __init__(self, name: str, sdef: dict):
         super().__init__(daemon=True, name=f"custom-sensor-{name}")
         self.sdef = sdef
-        self.interval = max(MIN_SENSOR_INTERVAL, float(sdef.get("interval_sec", 2.0)))
+        try:
+            self.interval = max(MIN_SENSOR_INTERVAL, float(sdef.get("interval_sec", 2.0)))
+        except (TypeError, ValueError):
+            self.interval = 2.0
         self.stop_event = threading.Event()
         self.result: tuple[str, float | None] | None = None
 
     def run(self):
         while not self.stop_event.is_set():
-            self.result = _run_command(self.sdef)  # single reference assignment: read lock-free
+            try:
+                self.result = _run_command(self.sdef)  # single reference assignment: read lock-free
+            except Exception:
+                log.exception("custom sensor '%s' failed", self.name)
+                self.result = None
             self.stop_event.wait(self.interval)
 
 
