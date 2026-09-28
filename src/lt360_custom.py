@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -125,6 +126,46 @@ def write_layout(path: str, text: str):
 def _backup(path: str):
     if os.path.isfile(path):
         shutil.copy2(path, path + ".bak")
+
+
+_TERMINAL_EDITORS = {"nano", "vim", "vi", "nvim", "emacs", "micro", "helix", "hx", "joe", "ed", "pico", "kak", "ne"}
+_GUI_EDITORS = ["kate", "gedit", "gnome-text-editor", "kwrite", "mousepad", "xed"]
+# (binary, args-before-command) for wrapping a terminal editor when we have no tty
+_TERMINALS = [("alacritty", ["-e"]), ("kitty", []), ("gnome-terminal", ["--"]), ("konsole", ["-e"]),
+              ("xfce4-terminal", ["-x"]), ("foot", []), ("wezterm", ["start", "--"]), ("xterm", ["-e"])]
+
+
+def open_in_text_editor(filepath: str, wait: bool = False):
+    """Open filepath in a text editor. Returns the command used.
+
+    Order: $VISUAL/$EDITOR (GUI editors directly) -> common GUI editors -> $EDITOR
+    terminal editor (run inline on a tty, else wrapped in a terminal emulator) -> xdg-open.
+    """
+    quiet = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    env = os.environ.get("VISUAL") or os.environ.get("EDITOR")
+    env_cmd = shlex.split(env) if env else []
+    env_is_tui = bool(env_cmd) and os.path.basename(env_cmd[0]) in _TERMINAL_EDITORS
+
+    def run(cmd, **kw):
+        proc = subprocess.Popen(cmd, **kw)
+        if wait:
+            proc.wait()
+        return cmd
+
+    if env_cmd and not env_is_tui and shutil.which(env_cmd[0]):
+        return run(env_cmd + [filepath], **quiet)
+    for name in _GUI_EDITORS:
+        exe = shutil.which(name)
+        if exe:
+            return run([exe, filepath], **quiet)
+    if env_cmd and env_is_tui and shutil.which(env_cmd[0]):
+        if sys.stdin.isatty():
+            subprocess.Popen(env_cmd + [filepath]).wait()
+            return env_cmd
+        for term, pre in _TERMINALS:
+            if shutil.which(term):
+                return run([term] + pre + env_cmd + [filepath], **quiet)
+    return run(["xdg-open", filepath], **quiet)
 
 
 def seed_default(path: str = CUSTOM_PATH) -> bool:

@@ -44,7 +44,6 @@ def bool_arg(value: str) -> bool:
 
 
 def customize(args):
-    import shlex
     import subprocess
 
     import lt360_custom as C
@@ -79,12 +78,10 @@ def customize(args):
         print(f"warning: daemon socket not found at {args.socket}; theme not switched", file=sys.stderr)
 
     if args.edit:
-        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
-        cmd = shlex.split(editor) + [C.CUSTOM_PATH] if editor else ["xdg-open", C.CUSTOM_PATH]
         try:
-            subprocess.call(cmd)
+            C.open_in_text_editor(C.CUSTOM_PATH, wait=True)
         except OSError as e:
-            print(f"error: cannot launch {cmd[0]}: {e}", file=sys.stderr)
+            print(f"error: cannot launch editor: {e}", file=sys.stderr)
             sys.exit(1)
 
 

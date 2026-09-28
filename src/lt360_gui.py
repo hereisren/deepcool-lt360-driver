@@ -477,10 +477,8 @@ class MainWindow(QMainWindow):
     def _open_customize(self):
         def launch():
             C.seed_default()
-            editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
-            # GUI has no terminal: a terminal $EDITOR would die instantly, so prefer the desktop handler.
-            subprocess.Popen(["xdg-open", C.CUSTOM_PATH], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return editor
+            C.open_in_text_editor(C.CUSTOM_PATH)
+            return None
 
         def done(result):
             if isinstance(result, Exception):
@@ -593,7 +591,9 @@ class MainWindow(QMainWindow):
         run_async(self, lambda p=path: _make_thumbnail(p), done)
 
     def browse_media(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Choose media", os.path.expanduser("~"), MEDIA_FILTER)
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose media", os.path.expanduser("~"), MEDIA_FILTER,
+            options=QFileDialog.Option.DontUseNativeDialog)
         if path:
             self.apply_media(path)
 
@@ -918,7 +918,24 @@ QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 QStatusBar {{ background: transparent; color: {W.MUTED}; }}
 QToolTip {{ background: {W.CARD}; color: {W.TEXT}; border: 1px solid {W.VIOLET}; padding: 4px; }}
-QMessageBox, QFileDialog {{ background: {W.CARD}; }}
+QMenu {{ background: #111119; color: #ffffff; border: 1px solid {W.VIOLET}; padding: 4px; }}
+QMenu::item {{ background: transparent; color: #ffffff; padding: 6px 22px; border-radius: 6px; }}
+QMenu::item:selected {{ background: #a855f7; color: #ffffff; }}
+QMenu::item:disabled {{ color: {W.MUTED}; }}
+QMenu::separator {{ height: 1px; background: {W.BORDER}; margin: 4px 8px; }}
+QMessageBox, QDialog, QFileDialog {{ background: #08080c; color: #ffffff; }}
+QDialog QLabel {{ color: #ffffff; }}
+QDialog QLineEdit {{ background: #111119; color: #ffffff; border: 1px solid {W.BORDER}; border-radius: 8px; padding: 5px 8px; selection-background-color: #a855f7; }}
+QListView, QTreeView {{
+    background: #08080c; color: #ffffff; border: 1px solid {W.BORDER}; outline: none;
+    alternate-background-color: #0d0d14; selection-background-color: #a855f7; selection-color: #ffffff;
+}}
+QListView::item:hover, QTreeView::item:hover {{ background: #1a1230; }}
+QListView::item:selected, QTreeView::item:selected {{ background: #a855f7; color: #ffffff; }}
+QHeaderView::section {{ background: #111119; color: #ffffff; border: none; border-right: 1px solid {W.BORDER}; padding: 4px 8px; }}
+QScrollBar:horizontal {{ background: transparent; height: 8px; margin: 2px; }}
+QScrollBar::handle:horizontal {{ background: #2a2144; border-radius: 3px; min-width: 30px; }}
+QScrollBar::handle:horizontal:hover {{ background: {W.VIOLET}; }}
 """
 
 
