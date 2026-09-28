@@ -10,6 +10,5 @@ repository's MIT license and remain the property of their respective owners/foun
   are not stated by the vendor. They are included here for interoperability only.
 
 If you are a rights holder and want a file removed, open an issue and it will be dropped.
-Note: the built-in overlay themes load these files by name and have no fallback yet, so
-removing them requires substituting open-licensed fonts under the same filenames.
-Custom overlays (`customize.json`) can use any `.ttf` via the `font` field.
+If the files are removed, the overlay falls back to a system sans font (DejaVu / Liberation /
+Noto) or Pillow's built-in font. Custom overlays (`customize.json`) can use any `.ttf` via the `font` field.

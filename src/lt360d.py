@@ -395,6 +395,34 @@ def _compose_and_encode(reel, canvas, layer):
     return jpg, jpeg_packets(jpg)
 
 
+class _CardReel:
+    """Just enough of a Reel for _compose_and_encode: the built-in card shown when no media is set."""
+    optimize = False
+
+    def __init__(self, display_model: int, is_mirror: bool, quality: int):
+        self.display_model, self.is_mirror, self.quality = display_model, is_mirror, quality
+
+
+def _fallback_card(display_model: int) -> Image.Image:
+    from PIL import ImageDraw
+    from lt360_common import canvas_size
+    from lt360_overlay import _font
+    w, h = canvas_size(display_model)
+    img = Image.new("RGB", (w, h))
+    px = ImageDraw.Draw(img)
+    for y in range(h):  # subtle vertical gradient
+        t = y / max(1, h - 1)
+        px.line([(0, y), (w, y)], fill=(int(12 + 20 * t), int(6 + 4 * t), int(24 + 30 * t)))
+    for i, (text, name, size, colour) in enumerate((
+            ("LT360 VISION", "semibold", w // 12, (255, 255, 255)),
+            ("// FOR RENMIN", "light", w // 22, (168, 85, 247)),
+            ("No media selected", "light", w // 34, (150, 150, 170)))):
+        font = _font(name, size)
+        box = px.textbbox((0, 0), text, font=font)
+        px.text(((w - (box[2] - box[0])) / 2 - box[0], h * 0.30 + i * h * 0.16), text, font=font, fill=colour)
+    return img
+
+
 def frame_loop(device: Device, state: State, stop_event: threading.Event):
     """Send a frame over USB only when something changed: a new media frame is due, the overlay
     pixels changed, or the HEARTBEAT elapsed with nothing new (static image keeps showing).
@@ -435,6 +463,16 @@ def frame_loop(device: Device, state: State, stop_event: threading.Event):
 
                 if reel is None or len(reel) == 0:
                     state.retry_pending_media()
+                    if not state.media_path:  # nothing chosen yet (fresh install): show the built-in card
+                        now = time.monotonic()
+                        gen = generation if overlay_on and layer is not None else -1
+                        if dirty or gen != prev_gen or out is None or now - last_send >= HEARTBEAT:
+                            card = _CardReel(settings[2], state.is_mirror, state.quality)
+                            out = _compose_and_encode(card, _fallback_card(settings[2]), layer if gen != -1 else None)
+                            device.write_packets(out[1])
+                            last_send, prev_gen = now, gen
+                            state.last_preview = (out[0], rotation_deg(card.display_model, card.is_mirror))
+                            state.preview_id += 1
                     nap(0.5)
                     continue
 

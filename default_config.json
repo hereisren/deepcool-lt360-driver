@@ -1,5 +1,6 @@
 {
-  "media": null,
+  "media": "",
+  "recent_media": [],
   "brightness": 50,
   "mode": "horizontal",
   "mirror": false,

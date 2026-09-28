@@ -174,7 +174,7 @@ above or a custom sensor (temperatures are in °C for bars).
 
 - `sysfs` reads the first number in any `/sys` or `/proc` file, multiplied by `scale` (default 1).
 - `command` runs through the shell every `interval_sec` (minimum 0.5) in its own
-  thread, with a `timeout_sec` (max 10). The **first line** of stdout is the value;
+  thread, with a `timeout_sec` (max 3). The **first line** of stdout is the value;
   a non-zero exit, timeout or empty output shows `fallback` (default empty).
   Commands only run while the custom theme is on screen.
 - With `scale` the output is treated as a number (`decimals` sets the precision);
@@ -209,3 +209,7 @@ rm -f ~/.local/share/applications/deepcool-lt360.desktop
 rm -f ~/.local/share/icons/hicolor/scalable/apps/deepcool-lt360.svg
 sudo rm -f /etc/udev/rules.d/99-deepcool-lt360.rules
 ```
+
+## Fonts
+
+`assets/fonts/` contains fonts extracted from the vendor software, included for hardware UI parity. They are not covered by this project's MIT license (see `assets/fonts/README.md`). If they are removed, the overlay automatically falls back to a system sans font (DejaVu/Liberation/Noto) or Pillow's built-in font.

@@ -83,7 +83,17 @@ def _font(name: str, size: int) -> ImageFont.FreeTypeFont:
     key = (name, size)
     if key not in _font_cache:
         path = os.path.join(ASSETS_FONT_DIR, _FONT_FILES[name])
-        _font_cache[key] = ImageFont.truetype(path, size)
+        try:
+            _font_cache[key] = ImageFont.truetype(path, size)
+        except OSError:  # bundled vendor font removed: fall back to a system sans / Pillow's built-in
+            for fallback in ("DejaVuSans.ttf", "LiberationSans-Regular.ttf", "NotoSans-Regular.ttf"):
+                try:
+                    _font_cache[key] = ImageFont.truetype(fallback, size)
+                    break
+                except OSError:
+                    continue
+            else:
+                _font_cache[key] = ImageFont.load_default(size)
     return _font_cache[key]
 
 

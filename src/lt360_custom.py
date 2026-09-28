@@ -28,7 +28,7 @@ CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".config", "deepcool-lt360")
 CUSTOM_PATH = os.path.join(CONFIG_DIR, "customize.json")
 CHECK_INTERVAL = 0.9  # just under 1 s so loop jitter never skips a whole tick
 MIN_SENSOR_INTERVAL = 0.5
-MAX_COMMAND_TIMEOUT = 10.0
+MAX_COMMAND_TIMEOUT = 3.0
 MAX_TEXT_LEN = 200
 
 BUILTIN_KEYS = {

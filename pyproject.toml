@@ -7,6 +7,11 @@ name = "deepcool-lt360"
 version = "0.2.0"
 description = "Linux driver for the DeepCool LT360 VISION AIO display (VID 3633, PID 002e)"
 readme = "README.md"
+authors = [{ name = "Ren", email = "219476143+hereisren@users.noreply.github.com" }]
+license = { text = "MIT" }
+
+[project.urls]
+Homepage = "https://github.com/hereisren/deepcool-lt360-driver"
 requires-python = ">=3.10"
 dependencies = [
     "pyusb>=1.2.1",
