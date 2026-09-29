@@ -112,7 +112,7 @@ fi
 echo "==> Enabling k10temp (AMD CPU temperature) now and on every boot (requires sudo)"
 K10_CONF="/etc/modules-load.d/k10temp.conf"
 if grep -qi AuthenticAMD /proc/cpuinfo; then
-    if lsmod | grep -q '^k10temp'; then
+    if grep -q '^k10temp ' /proc/modules; then   # not `lsmod | grep -q`: SIGPIPE + pipefail = false negative
         echo "    (module already loaded)"
     else
         sudo modprobe k10temp || echo "    WARNING: modprobe k10temp failed; CPU temp may show N/A"
@@ -133,7 +133,9 @@ ln -sf "$VENV/bin/lt360d" "$HOME/.local/bin/lt360d"
 ln -sf "$VENV/bin/lt360-gui" "$HOME/.local/bin/lt360-gui"
 if command -v fish >/dev/null 2>&1; then
     # universal var, idempotent: persists across shells and reboots
-    fish -c "fish_add_path -U $HOME/.local/bin" || echo "    (could not update fish PATH; add ~/.local/bin manually)"
+    # fish_add_path returns 1 when the path is already there, so check first
+    fish -c 'contains -- $argv[1] $fish_user_paths; or fish_add_path -U $argv[1]' "$HOME/.local/bin" \
+        || echo "    (could not update fish PATH; add ~/.local/bin manually)"
 fi
 
 echo "==> Installing desktop launcher and icon"
