@@ -391,6 +391,10 @@ class HudInspector(QFrame):
         self.text_label = field_label("TEXT")
         self.text_edit = QLineEdit()
         self.text_edit.setPlaceholderText("e.g. CPU {cpu_temp}°{temp_unit}")
+        self.text_edit.setToolTip(
+            "Variables: {cpu_temp} {gpu_temp} {cpu_load} {gpu_load} {gpu_power} {gpu_wattage} {gpu_power_str}\n"
+            "{gpu_clock} {cpu_freq} {cpu_freq_ghz} {ram_percent} {ram_used} {ram_total} {time} {date} {temp_unit}\n"
+            "plus your custom_sensors. {gpu_power_str} prints e.g. 85W.")
         self.text_edit.textEdited.connect(lambda t: self.patched.emit({"text": t}))
         self.color_btn = QPushButton("Color")
         self.color_btn.setObjectName("swatch")
@@ -969,7 +973,7 @@ class MainWindow(QMainWindow):
         tiles.setSpacing(8)
         self.tiles = {}
         for key, label in (("cpu_temp", "CPU TEMP"), ("gpu_temp", "GPU TEMP"), ("cpu_load", "CPU LOAD"),
-                           ("gpu_load", "GPU LOAD"), ("time", "TIME")):
+                           ("gpu_load", "GPU LOAD"), ("gpu_power", "GPU POWER"), ("time", "TIME")):
             t = W.ReadoutTile(label)
             self.tiles[key] = t
             tiles.addWidget(t)

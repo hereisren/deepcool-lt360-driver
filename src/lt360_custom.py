@@ -20,6 +20,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -34,15 +35,17 @@ CUSTOM_PATH = os.path.join(CONFIG_DIR, "customize.json")
 CHECK_INTERVAL = 0.9  # just under 1 s so loop jitter never skips a whole tick
 MIN_SENSOR_INTERVAL = 0.5
 MAX_COMMAND_TIMEOUT = 3.0
+MAX_SYSFS_READ = 4096  # bytes; sysfs values are tiny, and a mistyped /dev path can't eat RAM
 MAX_TEXT_LEN = 200
 HISTORY_SAMPLES = 60          # sparkline window: one sample per second
-HISTORY_KEYS = ("cpu_temp", "gpu_temp", "cpu_load", "gpu_load", "ram_percent")
+HISTORY_KEYS = ("cpu_temp", "gpu_temp", "cpu_load", "gpu_load", "gpu_power", "ram_percent")
 SUPERSAMPLE = 4               # rings/sparklines are drawn 4x and downsampled for smooth edges
 MAX_IMAGE_CACHE = 32
 
 BUILTIN_KEYS = {
-    "cpu_temp", "gpu_temp", "cpu_load", "gpu_load", "cpu_freq", "cpu_freq_ghz", "gpu_power", "gpu_clock",
-    "ram_percent", "ram_used", "ram_total", "time", "date", "temp_unit",
+    "cpu_temp", "gpu_temp", "cpu_load", "gpu_load", "cpu_freq", "cpu_freq_ghz", "gpu_power", "gpu_wattage",
+    "gpu_power_str", "gpu_wattage_str", "gpu_clock", "ram_percent", "ram_used", "ram_total", "time", "date",
+    "temp_unit",
 }
 _NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _NUM_RE = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
@@ -55,7 +58,8 @@ DEFAULT_LAYOUT = {
         "Element types: rect, text, bar, line, ring (arc gauge), sparkline (60 s graph), image (PNG sticker).",
         "Tip: lt360-gui > CUSTOM HUD > 'Edit HUD Layout' lets you drag elements on the live preview.",
         "Text variables: {cpu_temp} {gpu_temp} {cpu_load} {gpu_load} {cpu_freq} {cpu_freq_ghz} {gpu_power}",
-        "  {gpu_clock} {ram_percent} {ram_used} {ram_total} {time} {date} {temp_unit} + your custom_sensors.",
+        "  {gpu_wattage} {gpu_power_str} {gpu_clock} {ram_percent} {ram_used} {ram_total} {time} {date}",
+        "  {temp_unit} + your custom_sensors. GPU values come from the discrete card on iGPU + dGPU systems.",
         "More examples: examples/overlays/*.json  (or: lt360ctl customize --list)",
     ],
     "custom_sensors": {
@@ -237,7 +241,7 @@ def _to_reading(raw: str, sdef: dict) -> tuple[str, float | None]:
 def _read_sysfs(sdef: dict) -> tuple[str, float | None] | None:
     try:
         with open(os.path.expanduser(sdef["path"])) as f:
-            return _to_reading(f.read(), sdef)
+            return _to_reading(f.read(MAX_SYSFS_READ), sdef)
     except (OSError, KeyError, ValueError):
         return None
 
@@ -248,12 +252,29 @@ def _run_command(sdef: dict) -> tuple[str, float | None] | None:
     except (TypeError, ValueError):
         timeout = 2.0
     try:
-        out = subprocess.run(sdef["command"], shell=True, capture_output=True, text=True, timeout=timeout,
-                             stdin=subprocess.DEVNULL)
-    except (subprocess.SubprocessError, OSError, KeyError):
+        # Own session/process group and no stdin: a command can't wait on a terminal, and on timeout the
+        # whole group (shell + anything it started) is killed, so no child is left holding stdout open.
+        proc = subprocess.Popen(sdef["command"], shell=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True, errors="replace", start_new_session=True)
+    except (subprocess.SubprocessError, OSError, KeyError, TypeError):
         return None
-    lines = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
-    if out.returncode != 0 or not lines:
+    try:
+        stdout, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            proc.communicate(timeout=1.0)  # reap the shell; the pipe closes once the group is dead
+        except (subprocess.SubprocessError, OSError):
+            proc.kill()
+        return None
+    except (subprocess.SubprocessError, OSError):
+        proc.kill()
+        return None
+    lines = [ln.strip() for ln in stdout.splitlines() if ln.strip()]
+    if proc.returncode != 0 or not lines:
         return None
     return _to_reading(lines[0], sdef)
 
@@ -461,15 +482,19 @@ def build_context(data: dict, celsius: bool) -> tuple[_Ctx, dict]:
             return "N/A"
         return f"{(v if celsius else v * 9 / 5 + 32):.0f}"
 
+    watts = num("gpu_power", "{:.0f}W")
     ctx = _Ctx(
         cpu_temp=temp("cpu_temp"), gpu_temp=temp("gpu_temp"), temp_unit="C" if celsius else "F",
         cpu_load=num("cpu_load"), gpu_load=num("gpu_load"), cpu_freq=num("cpu_freq"),
         cpu_freq_ghz=("N/A" if data.get("cpu_freq") is None else f"{data['cpu_freq'] / 1000:.1f}"),
-        gpu_power=num("gpu_power"), gpu_clock=num("gpu_clock"), ram_percent=num("ram_percent"),
+        gpu_power=num("gpu_power"), gpu_wattage=num("gpu_power"),
+        gpu_power_str=watts, gpu_wattage_str=watts, gpu_clock=num("gpu_clock"), ram_percent=num("ram_percent"),
         ram_used=num("ram_used", "{:.1f}"), ram_total=num("ram_total", "{:.1f}"),
         time=str(data.get("time", "--:--:--")), date=str(data.get("date", "")),
     )
     raw = {k: v for k, v in data.items() if isinstance(v, (int, float))}
+    if raw.get("gpu_power") is not None:
+        raw["gpu_wattage"] = raw["gpu_power"]
     for name, c in (data.get("custom") or {}).items():
         ctx[name] = _with_unit(c["text"], c.get("unit", "")) if c.get("value") is not None or c["text"] else ""
         ctx[name + "_value"] = c["text"]
@@ -508,6 +533,8 @@ def _font(spec: str, size: int) -> ImageFont.FreeTypeFont:
         path = os.path.join(ASSETS_FONT_DIR, _FONT_FILES[alias]) if alias in _FONT_FILES \
             else os.path.expanduser(spec)
         try:
+            if not os.path.isfile(path):  # regular files only: never open a FIFO or device node
+                raise OSError(f"not a regular file: {path}")
             _font_cache[key] = ImageFont.truetype(path, size)
         except OSError:
             log.warning("font %r not found, using sans", spec)
@@ -810,6 +837,8 @@ def _sticker(el: dict) -> Image.Image:
     path = _resolve_path(el.get("path") or "")
     if not el.get("path"):
         raise ValueError("missing 'path'")
+    if not os.path.isfile(path):  # regular files only (follows symlinks): never open a FIFO or /dev node
+        raise ValueError(f"image not found or not a regular file: {path}")
     mtime = _mtime(path)
     if mtime is None:
         raise ValueError(f"image not found: {path}")

@@ -242,8 +242,11 @@ path + modification time: overwrite the PNG and the panel picks it up.
 
 Text variables (`"CPU {cpu_temp}°{temp_unit} | {my_sensor}"`): `cpu_temp`,
 `gpu_temp` (in your °C/°F setting), `cpu_load`, `gpu_load`, `cpu_freq` (MHz),
-`cpu_freq_ghz`, `gpu_power` (W), `gpu_clock`, `ram_percent`, `ram_used`,
-`ram_total` (GB), `time`, `date`, `temp_unit`, plus every custom sensor.
+`cpu_freq_ghz`, `gpu_power` / `gpu_wattage` (W), `gpu_power_str` / `gpu_wattage_str`
+(e.g. `85W`), `gpu_clock`, `ram_percent`, `ram_used`, `ram_total` (GB), `time`, `date`,
+`temp_unit`, plus every custom sensor. On machines with both an integrated and a discrete
+AMD GPU, all GPU values come from the discrete card (the one with the most dedicated VRAM),
+so there is no need for hand-written `/sys/class/hwmon` sensors.
 Unavailable readings show `N/A`. A bar's `source` is any of the numeric ones
 above or a custom sensor (temperatures are in °C for bars).
 

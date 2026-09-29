@@ -911,6 +911,8 @@ def format_metric(key: str, data: dict, celsius: bool) -> str:
         return "N/A"
     if key.endswith("_temp"):
         return f"{(v if celsius else v * 9 / 5 + 32):.0f}°"
+    if key in ("gpu_power", "gpu_wattage"):
+        return f"{v:.0f}W"
     return f"{v:.0f}%"
 
 

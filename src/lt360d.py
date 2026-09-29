@@ -193,8 +193,8 @@ class State:
 
     def set_media(self, path: str, persist: bool = True):
         resolved = resolve_path(path)
-        if not os.path.isfile(resolved):
-            raise FileNotFoundError(f"no such file: {resolved}")
+        if not os.path.isfile(resolved):  # also rejects FIFOs and device nodes such as /dev/zero
+            raise FileNotFoundError(f"no such file (or not a regular file): {resolved}")
         with self.reload_lock:
             _, dm, mirror, engine, overlay_on, framing = self._params()
             reel = load_reel(resolved, dm, mirror, engine, with_canvas=overlay_on,
