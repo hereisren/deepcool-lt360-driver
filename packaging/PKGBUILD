@@ -36,13 +36,9 @@ package() {
     install -Dm644 systemd/deepcool-lt360.service \
         "$pkgdir/usr/lib/systemd/user/deepcool-lt360.service"
 
+    # /usr/bin/lt360*, fonts, presets, default_config.json and the icon all come from the wheel above
     install -Dm644 desktop/deepcool-lt360.desktop \
         "$pkgdir/usr/share/applications/deepcool-lt360.desktop"
-    install -Dm644 desktop/deepcool-lt360.svg \
-        "$pkgdir/usr/share/icons/hicolor/scalable/apps/deepcool-lt360.svg"
-
-    install -Dm644 default_config.json \
-        "$pkgdir/usr/share/deepcool-lt360/default_config.json"
 
     install -Dm644 README.md \
         "$pkgdir/usr/share/doc/$_pkgname/README.md"

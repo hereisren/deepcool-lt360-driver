@@ -8,26 +8,18 @@ rotate+JPEG-encode step.
 """
 import logging
 import os
-import sys
 
 from PIL import Image, ImageDraw, ImageFont
+
+from lt360_common import REPO_ROOT, find_data_dir
 
 log = logging.getLogger("lt360d.overlay")
 
 
 def _find_font_dir() -> str:
-    """Fonts live in assets/fonts/ next to the repo checkout in dev, or under
-    the venv's share/ prefix when installed via pip (see pyproject.toml
-    data-files). Try both.
-    """
-    candidates = [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "fonts"),
-        os.path.join(sys.prefix, "share", "deepcool-lt360", "assets", "fonts"),
-    ]
-    for candidate in candidates:
-        if os.path.isdir(candidate):
-            return candidate
-    return candidates[0]
+    """Fonts live in assets/fonts/ of the repo checkout in dev, or under <share>/deepcool-lt360/ when
+    installed (pip/venv wheel, /usr or /usr/local package; see pyproject.toml data-files)."""
+    return find_data_dir("assets", "fonts") or os.path.join(REPO_ROOT, "assets", "fonts")
 
 
 ASSETS_FONT_DIR = _find_font_dir()

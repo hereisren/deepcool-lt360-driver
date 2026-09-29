@@ -5,7 +5,9 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart=%h/.local/share/deepcool-lt360/venv/bin/lt360d --config %h/.config/deepcool-lt360/config.json
+# Packaged path (makepkg/AUR and other distro packages). install.sh installs a per-user copy of this
+# unit into ~/.config/systemd/user/ with ExecStart pointing at its venv instead.
+ExecStart=/usr/bin/lt360d --config %h/.config/deepcool-lt360/config.json
 Restart=always
 RestartSec=2
 

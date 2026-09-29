@@ -87,14 +87,8 @@ DEFAULT_LAYOUT = {
 # ---------------------------------------------------------------- files / presets
 
 def _find_presets_dir() -> str:
-    candidates = [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples", "overlays"),
-        os.path.join(sys.prefix, "share", "deepcool-lt360", "examples", "overlays"),
-    ]
-    for c in candidates:
-        if os.path.isdir(c):
-            return os.path.abspath(c)
-    return os.path.abspath(candidates[0])
+    from lt360_common import REPO_ROOT, find_data_dir
+    return find_data_dir("examples", "overlays") or os.path.join(REPO_ROOT, "examples", "overlays")
 
 
 PRESETS_DIR = _find_presets_dir()

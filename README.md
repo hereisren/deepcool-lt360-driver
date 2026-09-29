@@ -91,10 +91,17 @@ cd deepcool-lt360-driver
 ./install.sh
 ```
 
-This creates a venv under `~/.local/share/deepcool-lt360`, installs the
-daemon/CLI/GUI into it, installs the udev rule (asks for `sudo` once), copies
-the systemd user unit and enables it, and installs a desktop launcher +
-icon so **LT360 VISION — For Renmin** shows up in your app menu. Safe to re-run.
+Works on Arch, Debian/Ubuntu/Mint, Fedora and openSUSE. It first checks the system
+dependencies (Python ≥ 3.10 with `venv`, `libusb-1.0`; optionally `ffmpeg` for video,
+`xcb-cursor` for the GUI on X11) and offers to install missing ones with
+`pacman`/`apt`/`dnf`/`zypper`. It then creates a venv under
+`~/.local/share/deepcool-lt360`, installs the daemon/CLI/GUI into it, installs the
+udev rule (asks for `sudo` once), installs a per-user copy of the systemd unit
+pointing at the venv and enables it, and adds a desktop launcher + icon so
+**LT360 VISION — For Renmin** shows up in your app menu. Safe to re-run.
+
+Use one method or the other: a unit in `~/.config/systemd/user/` (from
+`install.sh`) takes precedence over the package's `/usr/lib/systemd/user/` one.
 
 ## Usage
 

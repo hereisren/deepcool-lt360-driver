@@ -37,6 +37,8 @@ package-dir = {"" = "src"}
 include-package-data = true
 
 [tool.setuptools.data-files]
+"share/deepcool-lt360" = ["default_config.json"]
+"share/icons/hicolor/scalable/apps" = ["desktop/deepcool-lt360.svg"]
 "share/deepcool-lt360/examples/overlays" = [
     "examples/overlays/renmin_cyberpunk.json",
     "examples/overlays/minimal_pills.json",

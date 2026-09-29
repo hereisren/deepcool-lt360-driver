@@ -3,6 +3,9 @@
 Reference: PROTOCOL.md §14, §15, §20, §23, §24 (confirmed against hardware in Phase 4).
 """
 import io
+import os
+import site
+import sys
 
 from PIL import Image
 
@@ -26,6 +29,63 @@ ENGINE_PROFILES = {
     "performance": {"quality": 90, "optimize": False},
     "full": {"quality": 78, "optimize": True},
 }
+
+
+# ---------------------------------------------------------------- bundled data (fonts, presets, icon, defaults)
+
+APP_DATA_NAME = "deepcool-lt360"
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+
+def share_dirs() -> list[str]:
+    """Candidate <prefix>/share directories, most specific first: this interpreter's prefix (venv or
+    system), the pip --user base (~/.local), $XDG_DATA_HOME, /usr/local, /usr, then $XDG_DATA_DIRS."""
+    dirs = [os.path.join(sys.prefix, "share")]
+    try:
+        dirs.append(os.path.join(site.getuserbase(), "share"))
+    except Exception:
+        pass
+    dirs.append(os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share"))
+    dirs += ["/usr/local/share", "/usr/share"]
+    dirs += [d for d in os.environ.get("XDG_DATA_DIRS", "").split(":") if d]
+    out = []
+    for d in dirs:
+        d = os.path.abspath(d)
+        if d not in out:
+            out.append(d)
+    return out
+
+
+def data_roots() -> list[str]:
+    """Where assets/ and examples/ may live: the source checkout, then <share>/deepcool-lt360 for each
+    share_dirs() entry (covers venv/pip wheel installs and /usr or /usr/local system packages)."""
+    return [REPO_ROOT] + [os.path.join(s, APP_DATA_NAME) for s in share_dirs()]
+
+
+def find_data_dir(*rel: str) -> str | None:
+    """First existing <root>/<rel...> directory, e.g. find_data_dir("assets", "fonts")."""
+    for root in data_roots():
+        p = os.path.join(root, *rel)
+        if os.path.isdir(p):
+            return p
+    return None
+
+
+def find_data_file(*rel: str) -> str | None:
+    for root in data_roots():
+        p = os.path.join(root, *rel)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def find_icon_file(name: str = "deepcool-lt360.svg") -> str | None:
+    """The app icon: the checkout's desktop/ dir, else the hicolor theme under any share dir."""
+    for p in [os.path.join(REPO_ROOT, "desktop", name)] + \
+             [os.path.join(s, "icons", "hicolor", "scalable", "apps", name) for s in share_dirs()]:
+        if os.path.isfile(p):
+            return p
+    return None
 
 
 def checksum16(b: bytes) -> int:

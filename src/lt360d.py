@@ -27,8 +27,8 @@ from PIL import Image
 
 from lt360_common import (
     DEFAULT_ENGINE_MODE, ENGINE_MODES, EP_CMD, EP_IMAGE, FIT_MODES, INTERFACE, MODE_NAMES, PID, VID,
-    __version__, canvas_size, cmd_settings, cmd_stream_start, jpeg_packets, normalize_framing, rotate_and_encode,
-    rotation_deg,
+    __version__, canvas_size, cmd_settings, cmd_stream_start, find_data_file, jpeg_packets, normalize_framing,
+    rotate_and_encode, rotation_deg,
 )
 from lt360_ipc import default_socket_path
 from lt360_custom import CustomManager, signature as custom_signature
@@ -48,13 +48,7 @@ def _find_seed_config() -> str | None:
     """Read-only defaults used only when the per-user config does not exist yet:
     the repo checkout (dev) or the system package data dir (AUR install).
     """
-    for candidate in (
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "default_config.json"),
-        os.path.join(sys.prefix, "share", "deepcool-lt360", "default_config.json"),
-    ):
-        if os.path.isfile(candidate):
-            return candidate
-    return None
+    return find_data_file("default_config.json")
 
 
 DEFAULT_CONFIG_PATH = USER_CONFIG_PATH

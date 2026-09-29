@@ -10,13 +10,80 @@ CONFIG_DIR="$HOME/.config/deepcool-lt360"
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 UDEV_RULE_SRC="$REPO_DIR/udev/99-deepcool-lt360.rules"
 UDEV_RULE_DST="/etc/udev/rules.d/99-deepcool-lt360.rules"
+UDEV_RULE_STALE="/etc/udev/rules.d/70-deepcool-lt360.rules"   # left behind by an earlier dev build
+SERVICE_DST="$SYSTEMD_USER_DIR/deepcool-lt360.service"
 APPS_DIR="$HOME/.local/share/applications"
 ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
+
+# ---------------------------------------------------------------- system dependencies
+# Package names per package manager, as "required|optional" lists:
+#   python3 >= 3.10 with venv/ensurepip and libusb-1.0 are required; ffmpeg (video media), gcc (only if pip
+#   must build psutil from source) and xcb-cursor (PyQt6's X11 plugin; not needed on Wayland) are optional.
+PM=""
+for pm in pacman apt-get dnf zypper; do
+    if command -v "$pm" >/dev/null 2>&1; then PM="$pm"; break; fi
+done
+case "$PM" in
+    pacman)  PM_INSTALL="sudo pacman -S --needed"
+             PKG_PY="python"; PKG_VENV="python"; PKG_USB="libusb"; PKG_FFMPEG="ffmpeg"; PKG_GCC="gcc"
+             PKG_XCB="xcb-util-cursor" ;;
+    apt-get) PM_INSTALL="sudo apt-get install -y"
+             PKG_PY="python3"; PKG_VENV="python3-venv"; PKG_USB="libusb-1.0-0"; PKG_FFMPEG="ffmpeg"
+             PKG_GCC="gcc python3-dev"; PKG_XCB="libxcb-cursor0" ;;
+    dnf)     PM_INSTALL="sudo dnf install -y"
+             PKG_PY="python3"; PKG_VENV="python3"; PKG_USB="libusb1"; PKG_FFMPEG="ffmpeg-free"
+             PKG_GCC="gcc python3-devel"; PKG_XCB="xcb-util-cursor" ;;
+    zypper)  PM_INSTALL="sudo zypper install -y"
+             PKG_PY="python3"; PKG_VENV="python3"; PKG_USB="libusb-1_0-0"; PKG_FFMPEG="ffmpeg"
+             PKG_GCC="gcc python3-devel"; PKG_XCB="libxcb-cursor0" ;;
+    *)       PM_INSTALL=""
+             PKG_PY="python3 (>= 3.10)"; PKG_VENV="python3-venv"; PKG_USB="libusb-1.0"; PKG_FFMPEG="ffmpeg"
+             PKG_GCC="gcc"; PKG_XCB="libxcb-cursor" ;;
+esac
+
+has_py_lib() { python3 -c "import ctypes.util, sys; sys.exit(ctypes.util.find_library('$1') is None)" 2>/dev/null; }
+
+echo "==> Checking system dependencies (${PM:-unknown package manager})"
+REQUIRED=()
+OPTIONAL=()
+if ! command -v python3 >/dev/null 2>&1; then
+    REQUIRED+=($PKG_PY)
+elif ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))'; then
+    echo "    ERROR: python3 is $(python3 -V 2>&1 | cut -d' ' -f2); lt360 needs Python 3.10 or newer." >&2
+    exit 1
+else
+    python3 -c 'import venv, ensurepip' 2>/dev/null || REQUIRED+=($PKG_VENV)
+    has_py_lib usb-1.0 || REQUIRED+=($PKG_USB)
+    has_py_lib xcb-cursor || OPTIONAL+=($PKG_XCB)
+fi
+command -v ffmpeg >/dev/null 2>&1 || OPTIONAL+=($PKG_FFMPEG)
+command -v gcc >/dev/null 2>&1 || OPTIONAL+=($PKG_GCC)
+
+if [ ${#REQUIRED[@]} -gt 0 ]; then
+    echo "    missing required packages: ${REQUIRED[*]}"
+    if [ -n "$PM_INSTALL" ] && [ -t 0 ]; then
+        read -r -p "    Install them now with '$PM_INSTALL ${REQUIRED[*]}'? [y/N] " answer
+        if [[ "$answer" =~ ^[Yy] ]]; then
+            $PM_INSTALL "${REQUIRED[@]}"
+        else
+            exit 1
+        fi
+    else
+        echo "    Install them with: ${PM_INSTALL:-your package manager} ${REQUIRED[*]}" >&2
+        exit 1
+    fi
+fi
+if [ ${#OPTIONAL[@]} -gt 0 ]; then
+    echo "    optional, not installed: ${OPTIONAL[*]}"
+    echo "      (ffmpeg: MP4/WebM media; gcc: only if pip has to compile psutil; xcb-cursor: lt360-gui on X11)"
+    echo "      install with: ${PM_INSTALL:-your package manager} ${OPTIONAL[*]}"
+fi
 
 echo "==> Creating venv at $VENV"
 mkdir -p "$PREFIX"
 python3 -m venv "$VENV"
-"$VENV/bin/pip" install --upgrade pip >/dev/null
+# Distro venvs (Debian 12, Ubuntu 24.04, ...) seed an old setuptools; pyproject's license = "MIT" needs >= 77.
+"$VENV/bin/pip" install --upgrade pip "setuptools>=77" wheel >/dev/null
 "$VENV/bin/pip" install "$REPO_DIR[gui]"
 
 echo "==> Writing config to $CONFIG_DIR/config.json"
@@ -33,9 +100,10 @@ echo "==> Seeding $CONFIG_DIR/customize.json (custom overlay, hot-reloaded)"
 "$VENV/bin/python" -c "import lt360_custom as c; print('    created' if c.seed_default() else '    (existing customize.json kept)')"
 
 echo "==> Installing udev rule (requires sudo)"
-if [ -f "$UDEV_RULE_DST" ] && cmp -s "$UDEV_RULE_SRC" "$UDEV_RULE_DST"; then
+if [ -f "$UDEV_RULE_DST" ] && cmp -s "$UDEV_RULE_SRC" "$UDEV_RULE_DST" && [ ! -e "$UDEV_RULE_STALE" ]; then
     echo "    (already installed)"
 else
+    sudo rm -f "$UDEV_RULE_STALE"
     sudo cp "$UDEV_RULE_SRC" "$UDEV_RULE_DST"
     sudo udevadm control --reload-rules
     sudo udevadm trigger
@@ -81,8 +149,22 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1; then
 fi
 
 echo "==> Installing systemd user service"
+if command -v pacman >/dev/null 2>&1 && pacman -Qq deepcool-lt360-git >/dev/null 2>&1; then
+    echo "    WARNING: the deepcool-lt360-git package is also installed. This per-user unit overrides the"
+    echo "             package's (it runs the venv). To use the package instead, remove $SERVICE_DST"
+    echo "             and ~/.local/share/deepcool-lt360, then: systemctl --user daemon-reload"
+elif [ -x /usr/bin/lt360d ]; then
+    echo "    WARNING: /usr/bin/lt360d from a system package also exists; this per-user unit overrides it."
+fi
 mkdir -p "$SYSTEMD_USER_DIR"
-cp "$REPO_DIR/systemd/deepcool-lt360.service" "$SYSTEMD_USER_DIR/deepcool-lt360.service"
+# A drop-in from manual debugging would silently override the ExecStart written below.
+if [ -d "$SERVICE_DST.d" ]; then
+    echo "    removing stale override $SERVICE_DST.d"
+    rm -rf "$SERVICE_DST.d"
+fi
+# The shipped unit runs the packaged /usr/bin/lt360d; this per-user copy runs the venv instead.
+sed "s|^ExecStart=.*|ExecStart=$VENV/bin/lt360d --config %h/.config/deepcool-lt360/config.json|" \
+    "$REPO_DIR/systemd/deepcool-lt360.service" > "$SERVICE_DST"
 systemctl --user daemon-reload
 systemctl --user enable --now deepcool-lt360.service
 # enable --now does nothing to an already-running service; restart so it runs the freshly

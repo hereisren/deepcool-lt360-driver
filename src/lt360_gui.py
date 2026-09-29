@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
 )
 
 import lt360_custom as C
-from lt360_common import __version__
+from lt360_common import __version__, find_data_dir, find_icon_file
 from lt360_ipc import default_socket_path
 from lt360_overlay import normalize_readout
 import lt360_widgets as W
@@ -1526,17 +1526,9 @@ class MainWindow(QMainWindow):
 
 # ---------------------------------------------------------------------------
 
-def _find_dir(*rel) -> str | None:
-    for base in (os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."), os.path.join(sys.prefix, "share", "deepcool-lt360")):
-        p = os.path.join(base, *rel)
-        if os.path.isdir(p):
-            return p
-    return None
-
-
 def _load_fonts() -> str | None:
     """Register the bundled DeepCool fonts; returns a CJK-capable family for the 人民 badge."""
-    fonts = _find_dir("assets", "fonts")
+    fonts = find_data_dir("assets", "fonts")
     cjk = None
     if fonts:
         for fn, tag in (("JZFSSans-Regular-ad9b52af.otf", "sans"), ("JZFSSans-SemiBold-c3a8a050.otf", "sans"),
@@ -1650,13 +1642,8 @@ def _write_arrow() -> str:
 
 
 def _find_icon() -> QIcon | None:
-    for path in (
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "desktop", "deepcool-lt360.svg"),
-        os.path.join(sys.prefix, "share", "icons", "hicolor", "scalable", "apps", "deepcool-lt360.svg"),
-    ):
-        if os.path.isfile(path):
-            return QIcon(path)
-    return None
+    path = find_icon_file()
+    return QIcon(path) if path else None
 
 
 def _tray_icon() -> QIcon:
