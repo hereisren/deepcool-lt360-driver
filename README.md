@@ -8,17 +8,35 @@ USB display (VID `3633`, PID `002e`), reverse-engineered in [`PROTOCOL.md`](PROT
 No official Linux support exists for this panel — this project drives it entirely
 over `libusb`, no kernel module or vendor tooling required.
 
-*(screenshot coming soon — run `lt360-gui` to see it live)*
-
 ## Features
 
-- Stream any static image or looping GIF to the pump's 480×854 panel.
+- Stream any static image, looping GIF or MP4/WebM video to the pump's 480×854 panel.
 - Horizontal/vertical orientation and 180° mirror flip, brightness, °C/°F.
+- **Media framing**: Cover/Contain fit, 1.0–2.5× zoom, pan X/Y to put any
+  character of a wide or tall clip in frame, and 0.5×–2.0× playback speed.
 - Live CPU/GPU telemetry overlay (temp, load, clock, time) in three built-in
   themes, composited on top of your media in real time at <2% CPU overhead.
+- A fully custom, hot-reloading HUD (`customize.json`) with text, bars, lines,
+  **arc/ring gauges**, **rolling 60-second sparkline graphs** and **PNG
+  stickers**, plus your own shell/sysfs telemetry.
+- A **visual HUD editor**: drag elements around on the live preview and tweak
+  position, size, color and text from an inline inspector.
 - A background daemon (`lt360d`) that reconnects automatically if the device
   is unplugged, plus a scriptable CLI (`lt360ctl`) and a native dark-themed
-  GUI (`lt360-gui`) with a live mirror of what's on the pump screen.
+  GUI (`lt360-gui`) with a live mirror of what's on the pump screen, a
+  **system tray** mode, and a **Waybar** module (`lt360ctl status --waybar`).
+
+### New in v0.3.0
+
+| | |
+|---|---|
+| `ring`, `sparkline`, `image` widgets | Arc gauges with glow, 60 s rolling graphs of any numeric sensor, alpha-PNG badges. Two new presets: `dual_rings_hud`, `sparkline_pro`. |
+| Visual HUD Editor | **Edit HUD Layout** on the pump preview (CUSTOM HUD theme): click to select, drag or arrow-key to move, inspector for X/Y, size, color (`QColorDialog`) and text. Saves straight to `customize.json`. |
+| Media Framing & Speed | Fit (`Cover`/`Contain`), zoom, pan X/Y and playback speed in the GUI Media card, `lt360ctl framing`, and `config.json` → `"framing"`. |
+| Hardware Deck | Overlay, orientation, 180° flip, °C/°F, brightness and daemon Restart/Autostart always on screen under the preview. |
+| System tray | `lt360-gui --tray` / `--minimized`, close-to-tray, and a tray menu for themes, HUD presets, engine mode and brightness. |
+| Waybar | `lt360ctl status --waybar` prints one line of Waybar JSON. |
+| Fixes | Readout bars never repeat a metric (old `TIME CPU CPU` configs become `TIME CPU GPU`); `Load Preset...` no longer renders as `Load Preset.`; theme-card previews shrink text to fit instead of overlapping. |
 
 ## Components
 
@@ -26,10 +44,12 @@ over `libusb`, no kernel module or vendor tooling required.
 |---|---|
 | `src/lt360d.py` | Background daemon. Streams media to the panel, runs the sensor poll + overlay compositor, and listens on a Unix socket (`$XDG_RUNTIME_DIR/lt360.sock`, mode 0600) for commands. |
 | `src/lt360ctl.py` | Scriptable CLI to control the running daemon. |
-| `src/lt360_gui.py` | Native PyQt6 desktop app — live preview, media picker, hardware & overlay controls, service management. |
+| `src/lt360_gui.py` | Native PyQt6 desktop app — live preview, media picker + framing, Hardware Deck, overlay controls, visual HUD editor, system tray. |
+| `src/lt360_widgets.py` | The GUI's custom-painted widgets (pump stage, neon sliders/toggles, theme cards). |
 | `src/lt360_sensors.py` | CPU (`psutil`/`k10temp`/`zenpower`/`coretemp`) and GPU (`amdgpu` hwmon or `nvidia-smi`) telemetry reader. |
 | `src/lt360_overlay.py` | Themed overlay compositor (Pillow + the bundled DeepCool fonts). |
-| `src/lt360_common.py`, `src/lt360_media.py` | Wire protocol encoding and GIF/image pre-rendering. |
+| `src/lt360_custom.py` | `customize.json` engine: hot reload, custom sensors, 60 s telemetry history, all widget renderers. |
+| `src/lt360_common.py`, `src/lt360_media.py` | Wire protocol encoding, media framing, GIF/image pre-rendering and ffmpeg video streaming. |
 | `default_config.json` | Media/brightness/mode/overlay loaded by the daemon on startup. |
 | `systemd/deepcool-lt360.service` | User service unit. |
 | `udev/99-deepcool-lt360.rules` | Lets the daemon open the device without root. |
@@ -85,9 +105,23 @@ lt360-gui
 ```
 
 or launch **LT360 VISION — For Renmin** from your app menu / rofi / wofi. The GUI
-shows a live mirror of the pump screen, lets you pick media, adjust
-brightness/orientation/mirror/units, configure the telemetry overlay, and
-start/stop/restart the daemon service.
+shows a live mirror of the pump screen, lets you pick and frame media, configure
+the telemetry overlay, and edit your custom HUD visually.
+
+- **Hardware Deck** (under the preview, always visible): Overlay on/off,
+  Horizontal/Vertical, 180° Flip, brightness slider with live `%` badge, °C/°F,
+  and the daemon service's Restart, Start/Stop and Autostart controls.
+- **Media → Framing & Speed**: `Cover`/`Contain`, zoom 1.00–2.50×, pan X/Y
+  −100 %…+100 % (e.g. slide a wide GIF to keep a character centered) and
+  0.5×/1.0×/1.5×/2.0× playback. Changes re-render the media within a moment.
+- **Edit HUD Layout** (top-right of the preview, CUSTOM HUD theme only): see
+  [Visual HUD editor](#visual-hud-editor).
+- **System tray**: `lt360-gui --tray` starts hidden in the tray (closing the
+  window keeps it there); `--minimized` starts minimized. The tray menu has
+  Show/Hide, overlay theme, HUD presets, engine mode, brightness, a
+  **Close to Tray** toggle (remembered in `~/.config/deepcool-lt360/gui.json`)
+  and Quit. To start it with your session on Hyprland:
+  `exec-once = lt360-gui --tray`.
 
 ### CLI
 
@@ -102,13 +136,54 @@ lt360ctl celsius on
 lt360ctl overlay on --theme codezero --primary cpu_temp --secondary gpu_temp,cpu_load,time
 lt360ctl overlay off
 
+# media framing (pan is a percentage: -100 = left/top edge, 0 = centered, 100 = right/bottom edge)
+lt360ctl framing --fit cover --zoom 1.6 --pan-x -35 --pan-y 0
+lt360ctl framing --fit contain
+lt360ctl framing --speed 1.5
+lt360ctl framing --reset
+
 lt360ctl preview ./snapshot.jpg   # save the exact frame currently on the panel
 lt360ctl status
+lt360ctl status --waybar          # one-line JSON for Waybar
+lt360ctl --version
 ```
 
 Overlay themes: `boundary` (red), `codezero` (cyan/blue), `pixelworld`
 (purple — great for RGB builds), `custom` (your own `customize.json`, below).
-Metrics: `cpu_temp`, `gpu_temp`, `cpu_load`, `gpu_load`, `time`, `off`.
+Metrics: `cpu_temp`, `gpu_temp`, `cpu_load`, `gpu_load`, `time`, `off`. A metric
+is never shown twice: picking one that another slot already shows swaps the two.
+
+Framing is stored in `config.json` as
+`"framing": {"fit": "cover", "zoom": 1.0, "pan_x": 0.0, "pan_y": 0.0, "speed": 1.0}`
+(`pan_x`/`pan_y` from −1.0 to 1.0, `speed` from 0.25 to 4.0). Speed changes the
+frame timing of GIFs/images/performance-mode video without re-rendering them;
+full-mode video is re-timed inside ffmpeg.
+
+### Waybar
+
+`lt360ctl status --waybar` always exits 0 and prints
+`{"text", "alt", "class", "percentage", "tooltip"}`: the text is the CPU · GPU
+temperature, the tooltip has load, USB link, FPS, engine, brightness, overlay and
+media, and `class` is `normal`, `warm` (≥70 °C), `hot` (≥85 °C), `disconnected`
+(daemon up, USB unplugged) or `offline` (daemon not running).
+
+```jsonc
+// ~/.config/waybar/config.jsonc
+"custom/lt360": {
+    "exec": "lt360ctl status --waybar",
+    "return-type": "json",
+    "interval": 3,
+    "format": "❄ {}",
+    "on-click": "lt360-gui"
+}
+```
+
+```css
+/* ~/.config/waybar/style.css */
+#custom-lt360.warm { color: #facc15; }
+#custom-lt360.hot { color: #f87171; }
+#custom-lt360.offline, #custom-lt360.disconnected { color: #8b86a3; }
+```
 
 ## Custom Overlays & Telemetry (`customize.json`)
 
@@ -127,9 +202,10 @@ lt360ctl customize --reset                      # back to the default layout
 ```
 
 In the GUI pick the **CUSTOM HUD** card, then **Open customize.json** or
-**Load Preset…**. Presets live in `examples/overlays/` (`renmin_cyberpunk`,
-`minimal_pills`, `now_playing_hud`, `full_telemetry_grid`); copy-paste widgets
-from them into your own file.
+**Load Preset...**. Presets live in `examples/overlays/` (`renmin_cyberpunk`,
+`minimal_pills`, `now_playing_hud`, `full_telemetry_grid`, and new in v0.3.0
+`dual_rings_hud` and `sparkline_pro`); copy-paste widgets from them into your
+own file.
 
 ### Layout
 
@@ -152,6 +228,17 @@ with `_` (e.g. `"_comment"`) are ignored, as are whole lines starting with `//`.
 | `text` | `x y`, `text`, `font` (`pixel`, `sans`, `semibold`, `light`, `thin` or a `.ttf` path), `size`, `color`, `align` (`left`/`center`/`right`), `shadow`, `max_width` (truncates with …) |
 | `bar` | `x y w h`, `source`, `min`, `max`, `fill`, `bg`, `outline`, `radius` |
 | `line` | `x1 y1 x2 y2`, `color`, `width` |
+| `ring` | `x y` (top-left of the gauge), `radius` (or `w`/`h`), `thickness` (8), `source`, `min` (0), `max` (100), `start_angle` (135), `end_angle` (405), `bg` (`#1a1625cc`), `fill` (`#a855f7`), `glow` (optional halo color), `cap` (`round`/`flat`), centered `text` + `size`, `font`, `color`, `shadow`, and a smaller `label` + `label_size`, `label_color`, `label_font` |
+| `sparkline` | `x y w h`, `source`, `min` (0), `max` (100), `line_color` (`#22d3ee`), `fill_color` (`#22d3ee33`), `bg` (`#0a0a12aa`), `outline` (`#262038`), `radius` (8), `width` (line, 2), `grid` (optional guide-line color), `dot` (latest-sample dot, `true`) |
+| `image` | `x y`, `path` (PNG/WebP/JPEG/GIF first frame; relative paths are relative to `~/.config/deepcool-lt360/`), `w`/`h` (both = stretch, one = keep aspect, none = natural size), `opacity` (0.0–1.0) |
+
+`ring` angles are degrees clockwise from 3 o'clock, so the default 135 → 405 is
+a 270° gauge open at the bottom; `0`/`360` is a full circle. `sparkline` plots
+the last 60 seconds (one sample per second, newest at the right) of any numeric
+built-in (`cpu_temp`, `gpu_temp`, `cpu_load`, `gpu_load`, `ram_percent`) or
+numeric custom sensor; the daemon keeps that history even while another theme
+is active, so graphs are full the moment you switch. `image` files are cached by
+path + modification time: overwrite the PNG and the panel picks it up.
 
 Text variables (`"CPU {cpu_temp}°{temp_unit} | {my_sensor}"`): `cpu_temp`,
 `gpu_temp` (in your °C/°F setting), `cpu_load`, `gpu_load`, `cpu_freq` (MHz),
@@ -185,6 +272,27 @@ above or a custom sensor (temperatures are in °C for bars).
 - Names must be identifiers and can't reuse a built-in name.
 
 The commands run as you, from a file only you can edit; only paste layouts you trust.
+
+### Visual HUD editor
+
+With the **CUSTOM HUD** theme active, switch on **Edit HUD Layout** (top-right
+corner of the pump preview). Every element's bounding box is outlined on the
+live frame:
+
+- **Click** an element to select it (the smallest box under the cursor wins, so
+  a label can be picked off the panel behind it), **drag** to move it, or nudge
+  it with the **arrow keys** (Shift = 10 px).
+- The **inspector bar** under the preview edits `X`/`Y`, the size fields for
+  that type (`SIZE` for text, `RADIUS`/`THICK` for rings, `W`/`H` for boxes,
+  bars, sparklines and images, `WIDTH` for lines), the main **Color** (a color
+  picker with alpha) and the `text` of text/ring elements.
+- Changes are written straight to `customize.json` (throttled while dragging)
+  and the daemon hot-reloads them, so the pump follows along. The first save of
+  each editing session keeps the previous file as `customize.json.bak`. The
+  editor rewrites the file in the presets' one-element-per-line style;
+  `"_comment"` keys survive but whole-line `//` comments do not. If the file is
+  changed in a text editor meanwhile, the GUI reloads it instead of overwriting.
+- In vertical mode the editor edits `elements_vertical` when the file has it.
 
 ## Protocol overview
 
@@ -220,4 +328,4 @@ sudo rm -f /etc/udev/rules.d/99-deepcool-lt360.rules
 
 Built by **Ren** ([@hereisren](https://github.com/hereisren)) — *For Renmin (人民), For The People*.
 
-Developed through a combination of manual hardware reverse-engineering, live USB/LCD testing, and AI-assisted engineering using **Claude Opus 5.5**, **Gemini 3.1 Pro**, and **Claude Sonnet 5**.
+Developed through manual hardware reverse-engineering, live USB/LCD testing, and AI-assisted engineering using **Claude Opus 5.5**, **Gemini 3.1 Pro**, and **Claude Sonnet 5**.

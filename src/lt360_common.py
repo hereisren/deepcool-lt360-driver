@@ -6,6 +6,8 @@ import io
 
 from PIL import Image
 
+__version__ = "0.3.0"
+
 VID, PID = 0x3633, 0x002E
 EP_IMAGE = 0x02
 EP_CMD = 0x04
@@ -66,12 +68,70 @@ def cover_resize(img: Image.Image, target_w: int, target_h: int) -> Image.Image:
     return img.crop((left, top, left + target_w, top + target_h))
 
 
-def render_canvas(img: Image.Image, display_model: int = HORIZONTAL) -> Image.Image:
-    """Cover-resize/crop a frame to the target canvas, pre-rotation. This is the
+# Media framing (config.json "framing"): how a source frame is fitted onto the canvas.
+FIT_MODES = ("cover", "contain")
+ZOOM_RANGE = (1.0, 2.5)
+PAN_RANGE = (-1.0, 1.0)      # -1 = left/top edge, 0 = centered, +1 = right/bottom edge
+SPEED_RANGE = (0.25, 4.0)
+DEFAULT_FRAMING = {"fit": "cover", "zoom": 1.0, "pan_x": 0.0, "pan_y": 0.0, "speed": 1.0}
+
+
+def normalize_framing(value: dict | None) -> dict:
+    """Validated copy of a (possibly partial) framing dict; out-of-range numbers are clamped."""
+    out = dict(DEFAULT_FRAMING)
+    if not isinstance(value, dict):
+        return out
+    if value.get("fit") in FIT_MODES:
+        out["fit"] = value["fit"]
+    for key, (lo, hi) in (("zoom", ZOOM_RANGE), ("pan_x", PAN_RANGE), ("pan_y", PAN_RANGE), ("speed", SPEED_RANGE)):
+        try:
+            out[key] = round(min(hi, max(lo, float(value.get(key, out[key])))), 3)
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
+def framing_geometry(src_w: int, src_h: int, target_w: int, target_h: int, framing: dict | None = None):
+    """(scale, offset_x, offset_y): where the scaled source lands on the target canvas.
+
+    One formula serves both fits: the offset is (target - scaled) * (1 + pan) / 2, so pan -1 aligns
+    the source's left/top edge with the canvas and +1 its right/bottom edge -- a crop offset when the
+    source overflows (cover / zoomed), a letterbox position when it is smaller (contain).
+    """
+    f = framing or DEFAULT_FRAMING
+    fit = max if f.get("fit", "cover") == "cover" else min
+    s = fit(target_w / src_w, target_h / src_h) * float(f.get("zoom", 1.0))
+    nw, nh = src_w * s, src_h * s
+    return s, (target_w - nw) * (1 + float(f.get("pan_x", 0.0))) / 2, (target_h - nh) * (1 + float(f.get("pan_y", 0.0))) / 2
+
+
+def frame_image(img: Image.Image, target_w: int, target_h: int, framing: dict | None = None) -> Image.Image:
+    """Fit an RGB image onto a black target_w x target_h canvas using `framing` (cover/contain, zoom, pan).
+    Only the visible part of the source is resampled, so zooming in never costs a full-size upscale.
+    """
+    if framing is None or framing == DEFAULT_FRAMING or \
+            all(framing.get(k) == DEFAULT_FRAMING[k] for k in ("fit", "zoom", "pan_x", "pan_y")):
+        return cover_resize(img, target_w, target_h)
+    src_w, src_h = img.size
+    s, ox, oy = framing_geometry(src_w, src_h, target_w, target_h, framing)
+    # visible destination rect, clipped to the canvas
+    dx0, dy0 = max(0, round(ox)), max(0, round(oy))
+    dx1, dy1 = min(target_w, round(ox + src_w * s)), min(target_h, round(oy + src_h * s))
+    canvas = Image.new("RGB", (target_w, target_h))
+    if dx1 <= dx0 or dy1 <= dy0:
+        return canvas
+    box = (max(0.0, (dx0 - ox) / s), max(0.0, (dy0 - oy) / s),
+           min(float(src_w), (dx1 - ox) / s), min(float(src_h), (dy1 - oy) / s))  # rounding can overshoot
+    canvas.paste(img.resize((dx1 - dx0, dy1 - dy0), box=box), (dx0, dy0))
+    return canvas
+
+
+def render_canvas(img: Image.Image, display_model: int = HORIZONTAL, framing: dict | None = None) -> Image.Image:
+    """Fit a frame onto the target canvas (cover-crop by default), pre-rotation. This is the
     orientation the overlay compositor draws on top of.
     """
     target_w, target_h = canvas_size(display_model)
-    return cover_resize(img.convert("RGB"), target_w, target_h)
+    return frame_image(img.convert("RGB"), target_w, target_h, framing)
 
 
 def rotate_and_encode(img: Image.Image, display_model: int = HORIZONTAL, is_mirror: bool = False,

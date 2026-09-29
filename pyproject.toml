@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deepcool-lt360"
-version = "0.2.0"
+version = "0.3.0"
 description = "Linux driver for the DeepCool LT360 VISION AIO display (VID 3633, PID 002e)"
 readme = "README.md"
 authors = [{ name = "Ren", email = "219476143+hereisren@users.noreply.github.com" }]
-license = { text = "MIT" }
+license = "MIT"
 requires-python = ">=3.10"
 dependencies = [
     "pyusb>=1.2.1",
@@ -42,6 +42,8 @@ include-package-data = true
     "examples/overlays/minimal_pills.json",
     "examples/overlays/now_playing_hud.json",
     "examples/overlays/full_telemetry_grid.json",
+    "examples/overlays/dual_rings_hud.json",
+    "examples/overlays/sparkline_pro.json",
 ]
 "share/deepcool-lt360/assets/fonts" = [
     "assets/fonts/JZFSSans-Regular-ad9b52af.otf",

@@ -26,13 +26,14 @@ from pathlib import Path
 from PIL import Image
 
 from lt360_common import (
-    DEFAULT_ENGINE_MODE, ENGINE_MODES, EP_CMD, EP_IMAGE, INTERFACE, MODE_NAMES, PID, VID,
-    canvas_size, cmd_settings, cmd_stream_start, jpeg_packets, rotate_and_encode, rotation_deg,
+    DEFAULT_ENGINE_MODE, ENGINE_MODES, EP_CMD, EP_IMAGE, FIT_MODES, INTERFACE, MODE_NAMES, PID, VID,
+    __version__, canvas_size, cmd_settings, cmd_stream_start, jpeg_packets, normalize_framing, rotate_and_encode,
+    rotation_deg,
 )
 from lt360_ipc import default_socket_path
 from lt360_custom import CustomManager, signature as custom_signature
-from lt360_media import PERF_MAX_FRAMES, Reel, load_reel
-from lt360_overlay import OverlayRenderer, THEMES, default_overlay_config, format_metric
+from lt360_media import PERF_MAX_FRAMES, Reel, geometry_key, load_reel
+from lt360_overlay import OverlayRenderer, THEMES, default_overlay_config, format_metric, normalize_readout
 from lt360_sensors import SensorReader
 
 log = logging.getLogger("lt360d")
@@ -81,7 +82,7 @@ class State:
     """
 
     MANAGED_KEYS = {"media", "brightness", "mode", "mirror", "celsius", "quality", "overlay", "recent_media",
-                    "engine_mode"}
+                    "engine_mode", "framing"}
 
     def __init__(self, config: dict, config_path: str | None = None):
         self.lock = threading.RLock()
@@ -98,6 +99,7 @@ class State:
         engine = config.get("engine_mode", DEFAULT_ENGINE_MODE)
         self.engine_mode = engine if engine in ENGINE_MODES else DEFAULT_ENGINE_MODE
         self.perf_max_frames = int(config.get("perf_max_frames", PERF_MAX_FRAMES))  # unmanaged key, hand-editable
+        self.framing = normalize_framing(config.get("framing"))  # fit/zoom/pan_x/pan_y/speed
         media = config.get("media")
         self.media_path = resolve_path(media) if media else None
         self.recent_media = [resolve_path(p) for p in config.get("recent_media", []) if p][:MAX_RECENTS]
@@ -107,6 +109,7 @@ class State:
 
         self.overlay = default_overlay_config()
         self.overlay.update(config.get("overlay", {}))
+        self._normalize_readout()
         self.sensor_data: dict = {}
         self.overlay_layer = None  # RGBA layer, rebuilt off-lock by sensor_loop
         self.custom = CustomManager()  # ~/.config/deepcool-lt360/customize.json, hot-reloaded by sensor_loop
@@ -124,6 +127,11 @@ class State:
         self._started = time.monotonic()
         self._next_media_retry = 0.0
 
+    def _normalize_readout(self):
+        """No metric twice in the readout bar (fixes configs saved as e.g. TIME / CPU / CPU)."""
+        self.overlay["primary"], self.overlay["secondary"] = normalize_readout(
+            self.overlay.get("primary"), self.overlay.get("secondary"))
+
     # ---------- persistence ----------
 
     def snapshot_config(self) -> dict:
@@ -137,6 +145,7 @@ class State:
                 "celsius": self.celsius,
                 "quality": self.quality,
                 "engine_mode": self.engine_mode,
+                "framing": dict(self.framing),
                 "overlay": dict(self.overlay),
                 "recent_media": list(self.recent_media),
             })
@@ -180,16 +189,16 @@ class State:
     def _params(self):
         with self.lock:
             return (self.media_path, self.display_model, self.is_mirror, self.engine_mode,
-                    bool(self.overlay["enabled"]))
+                    bool(self.overlay["enabled"]), dict(self.framing))
 
     def set_media(self, path: str, persist: bool = True):
         resolved = resolve_path(path)
         if not os.path.isfile(resolved):
             raise FileNotFoundError(f"no such file: {resolved}")
         with self.reload_lock:
-            _, dm, mirror, engine, overlay_on = self._params()
+            _, dm, mirror, engine, overlay_on, framing = self._params()
             reel = load_reel(resolved, dm, mirror, engine, with_canvas=overlay_on,
-                             max_frames=self.perf_max_frames)  # off-lock
+                             max_frames=self.perf_max_frames, framing=framing)  # off-lock
             with self.lock:
                 self.reel = reel  # atomic swap
                 self.media_path = resolved
@@ -201,24 +210,36 @@ class State:
             self.save()
 
     def reconfigure(self, display_model: int | None = None, is_mirror: bool | None = None,
-                    overlay_patch: dict | None = None, engine_mode: str | None = None):
-        """Change orientation/mirror/overlay-enabled/engine mode: re-bake the reel off-lock, then swap
-        the reel and the new settings in together so a frame is never rendered mismatched.
+                    overlay_patch: dict | None = None, engine_mode: str | None = None,
+                    framing_patch: dict | None = None):
+        """Change orientation/mirror/overlay-enabled/engine mode/framing: re-bake the reel off-lock, then
+        swap the reel and the new settings in together so a frame is never rendered mismatched.
+        Playback speed alone never re-bakes a pre-rendered reel (it only scales frame delays), but a
+        streamed video restarts ffmpeg with the new speed.
         """
         with self.reload_lock:
-            path, dm, mirror, engine, overlay_on = self._params()
+            path, dm, mirror, engine, overlay_on, framing = self._params()
             new_dm = dm if display_model is None else display_model
             new_mirror = mirror if is_mirror is None else is_mirror
             new_engine = engine if engine_mode is None else engine_mode
             new_overlay_on = overlay_on if not overlay_patch else bool(overlay_patch.get("enabled", overlay_on))
+            new_framing = normalize_framing({**framing, **(framing_patch or {})})
+            with self.lock:
+                streaming = bool(self.reel is not None and self.reel.streaming)
+            rebake = (new_dm, new_mirror, new_overlay_on, new_engine, geometry_key(new_framing)) != \
+                (dm, mirror, overlay_on, engine, geometry_key(framing))
+            if streaming and new_framing["speed"] != framing["speed"]:
+                rebake = True
             reel = None
-            if path and (new_dm, new_mirror, new_overlay_on, new_engine) != (dm, mirror, overlay_on, engine):
+            if path and rebake:
                 reel = load_reel(path, new_dm, new_mirror, new_engine, with_canvas=new_overlay_on,
-                                 max_frames=self.perf_max_frames)  # off-lock
+                                 max_frames=self.perf_max_frames, framing=new_framing)  # off-lock
             with self.lock:
                 self.display_model, self.is_mirror, self.engine_mode = new_dm, new_mirror, new_engine
+                self.framing = new_framing
                 if overlay_patch:
                     self.overlay.update(overlay_patch)
+                    self._normalize_readout()
                 if reel is not None:
                     self.reel = reel
                     self.frame_index = 0
@@ -246,7 +267,9 @@ class State:
         with self.lock:
             streaming = bool(self.reel and self.reel.streaming)
             return {
+                "version": __version__,
                 "engine_mode": self.engine_mode,
+                "framing": dict(self.framing),
                 "packets_per_min": pkts_per_min,
                 "media": self.media_path,
                 "recent_media": list(self.recent_media),
@@ -326,7 +349,7 @@ def _overlay_key(state: State, custom: CustomManager) -> tuple | None:
             return None
         cfg, data, celsius, dm = dict(state.overlay), dict(state.sensor_data), state.celsius, state.display_model
     if cfg.get("theme") == "custom":
-        sig = custom_signature(custom.elements_for(canvas_size(dm)), data, celsius)
+        sig = custom_signature(custom.elements_for(canvas_size(dm)), data, celsius, custom.history)
         return (dm, celsius, "custom", custom.version, sig)
     metrics = [cfg.get("primary")] + list(cfg.get("secondary", []))
     text = tuple(format_metric(m, data, celsius) for m in metrics)
@@ -351,6 +374,7 @@ def sensor_loop(state: State, stop_event: threading.Event):
             data = reader.read()
             if using_custom:
                 data["custom"] = custom.sensor_values()
+            custom.history.record(data)  # always, so sparklines have a full minute as soon as they appear
             with state.lock:
                 state.sensor_data = data
             key = _overlay_key(state, custom)
@@ -453,6 +477,7 @@ def frame_loop(device: Device, state: State, stop_event: threading.Event):
                     state.settings_dirty = False
                     settings = (state.brightness, state.celsius, state.display_model)
                     reel, idx = state.reel, state.frame_index
+                    speed = state.framing["speed"]
                     layer, generation = state.overlay_layer, state.overlay_generation
                     overlay_on = bool(state.overlay["enabled"])
 
@@ -509,6 +534,7 @@ def frame_loop(device: Device, state: State, stop_event: threading.Event):
                         sent_key = key
                     else:
                         duration = (reel.canvas_frame_at(idx) if reel.canvas_frames else reel.frame_at(idx))[-1]
+                    duration /= speed  # playback speed: pre-baked frames just show for a shorter/longer time
 
                 now = time.monotonic()
                 if out is not None and (fresh or now - last_send >= HEARTBEAT):
@@ -646,6 +672,20 @@ def dispatch(request: dict, state: State, device: Device) -> dict:
         state.reconfigure(engine_mode=mode)
         return {"ok": True, "status": state.status()}
 
+    if action == "set_framing":
+        patch = request.get("value", {})
+        if not isinstance(patch, dict):
+            return {"ok": False, "error": "framing must be an object"}
+        unknown = set(patch) - {"fit", "zoom", "pan_x", "pan_y", "speed"}
+        if unknown:
+            return {"ok": False, "error": f"unknown framing key(s): {sorted(unknown)}"}
+        if "fit" in patch and patch["fit"] not in FIT_MODES:
+            return {"ok": False, "error": f"fit must be one of {list(FIT_MODES)}"}
+        if request.get("reset"):
+            patch = {**normalize_framing(None), **patch}
+        state.reconfigure(framing_patch=patch)
+        return {"ok": True, "status": state.status()}
+
     if action == "set_overlay":
         patch = request.get("value", {})
         if "theme" in patch and patch["theme"] not in THEMES:
@@ -694,6 +734,7 @@ def main():
 
     config = load_config(args.config)
     state = State(config, config_path=args.config)
+    log.info("lt360d %s", __version__)
     log.info("config %s: media=%s brightness=%d mode=%s engine=%s", args.config, state.media_path,
              state.brightness, "horizontal" if state.display_model == 0 else "vertical", state.engine_mode)
 

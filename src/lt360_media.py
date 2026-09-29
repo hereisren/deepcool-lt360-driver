@@ -5,6 +5,10 @@
 * full: images/GIFs are pre-baked with the smaller "full" JPEG profile, while video is *streamed*
   through a long-lived ffmpeg process (VideoStreamReel), so any length plays without a cutoff and
   RAM stays flat.
+
+Both honour the config's media framing (fit/zoom/pan, see lt360_common.frame_image). Playback speed is
+applied at playback time for pre-baked reels (frame durations are divided by it) and inside ffmpeg
+(setpts) for streamed video.
 """
 import fractions
 import logging
@@ -16,8 +20,8 @@ from dataclasses import dataclass, field
 from PIL import Image, ImageSequence
 
 from lt360_common import (
-    DEFAULT_ENGINE_MODE, ENGINE_PROFILES, HORIZONTAL, canvas_size, jpeg_packets, render_canvas,
-    rotate_and_encode,
+    DEFAULT_ENGINE_MODE, DEFAULT_FRAMING, ENGINE_PROFILES, HORIZONTAL, canvas_size, jpeg_packets,
+    normalize_framing, render_canvas, rotate_and_encode,
 )
 
 log = logging.getLogger("lt360d.media")
@@ -40,6 +44,29 @@ def is_video(path: str) -> bool:
     return os.path.splitext(path)[1].lower() in VIDEO_EXTS
 
 
+def geometry_key(framing: dict | None) -> tuple:
+    """The part of the framing that changes pixels (speed only changes timing)."""
+    f = normalize_framing(framing)
+    return f["fit"], f["zoom"], f["pan_x"], f["pan_y"]
+
+
+def ffmpeg_frame_filter(w: int, h: int, framing: dict | None) -> str:
+    """ffmpeg filter chain that fits the input onto a w x h canvas exactly like lt360_common.frame_image:
+    scale (cover/contain x zoom), pad to at least the canvas, then crop the canvas out at the pan offset.
+    Expressions use the input size (iw/ih), so no ffprobe of the source dimensions is needed.
+    """
+    f = normalize_framing(framing)
+    if geometry_key(f) == geometry_key(DEFAULT_FRAMING):
+        return f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}"
+    fit = "max" if f["fit"] == "cover" else "min"
+    s = f"{fit}({w}/iw,{h}/ih)*{f['zoom']:g}"
+    ax, ay = (1 + f["pan_x"]) / 2, (1 + f["pan_y"]) / 2
+    return (f"format=rgb24,"
+            f"scale=w='max(2,trunc(iw*{s}))':h='max(2,trunc(ih*{s}))',"
+            f"pad=w='max(iw,{w})':h='max(ih,{h})':x='max(0,({w}-iw)*{ax:g})':y='max(0,({h}-ih)*{ay:g})':color=black,"
+            f"crop={w}:{h}:x='max(0,(iw-{w})*{ax:g})':y='max(0,(ih-{h})*{ay:g})'")
+
+
 @dataclass
 class Reel:
     """A pre-rendered, ready-to-loop sequence of frames.
@@ -57,6 +84,7 @@ class Reel:
     is_mirror: bool = False
     quality: int = 90
     optimize: bool = False
+    framing: dict = field(default_factory=lambda: dict(DEFAULT_FRAMING))
     streaming = False
 
     def frame_at(self, index: int):
@@ -86,7 +114,8 @@ class VideoStreamReel:
     """
     streaming = True
 
-    def __init__(self, path: str, display_model: int, is_mirror: bool, quality: int, optimize: bool):
+    def __init__(self, path: str, display_model: int, is_mirror: bool, quality: int, optimize: bool,
+                 framing: dict | None = None):
         if shutil.which("ffmpeg") is None:
             raise RuntimeError("ffmpeg is required for video files but was not found")
         native = _probe_fps(path)
@@ -94,6 +123,7 @@ class VideoStreamReel:
             raise FileNotFoundError(path)
         self.path, self.display_model, self.is_mirror = path, display_model, is_mirror
         self.quality, self.optimize = quality, optimize
+        self.framing = normalize_framing(framing)
         self.fps = min(native or STREAM_MAX_FPS, STREAM_MAX_FPS)
         self.size = canvas_size(display_model)
         self._frame_bytes = self.size[0] * self.size[1] * 3
@@ -104,8 +134,10 @@ class VideoStreamReel:
 
     def _start(self):
         w, h = self.size
+        speed = self.framing["speed"]
+        retime = f"setpts=PTS/{speed:g}," if speed != 1.0 else ""
         cmd = ["ffmpeg", "-v", "error", "-nostdin", "-stream_loop", "-1", "-i", self.path, "-an",
-               "-vf", f"fps={self.fps:g},scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}",
+               "-vf", f"{retime}fps={self.fps:g},{ffmpeg_frame_filter(w, h, self.framing)}",
                "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
         self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         log.info("streaming %s at %g fps (ffmpeg pid %d)", self.path, self.fps, self._proc.pid)
@@ -136,11 +168,11 @@ class VideoStreamReel:
             pass
 
 
-def _video_canvases(path: str, size: tuple[int, int], fps: int, max_seconds: float):
-    """Yield canvas-sized RGB frames from a video via ffmpeg (cover-scaled, capped fps/length)."""
+def _video_canvases(path: str, size: tuple[int, int], fps: int, max_seconds: float, framing: dict | None = None):
+    """Yield canvas-sized RGB frames from a video via ffmpeg (framed, capped fps/length)."""
     w, h = size
     cmd = ["ffmpeg", "-v", "error", "-nostdin", "-i", path, "-t", str(max_seconds),
-           "-an", "-vf", f"fps={fps},scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}",
+           "-an", "-vf", f"fps={fps},{ffmpeg_frame_filter(w, h, framing)}",
            "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -160,27 +192,27 @@ def _video_canvases(path: str, size: tuple[int, int], fps: int, max_seconds: flo
         proc.wait()
 
 
-def _source_canvases(path: str, display_model: int, max_frames: int):
+def _source_canvases(path: str, display_model: int, max_frames: int, framing: dict | None = None):
     """Yield (canvas, duration_seconds) for every frame of a pre-decoded source."""
     if is_video(path):
         # one frame past the cap, so load_reel can tell the clip was truncated
         for canvas in _video_canvases(path, canvas_size(display_model), PERF_VIDEO_FPS,
-                                      (max_frames + 1) / PERF_VIDEO_FPS):
+                                      (max_frames + 1) / PERF_VIDEO_FPS, framing):
             yield canvas, 1.0 / PERF_VIDEO_FPS
         return
     img = Image.open(path)
     if getattr(img, "is_animated", False):
         for frame in ImageSequence.Iterator(img):
             duration_ms = frame.info.get("duration", 0) or int(DEFAULT_FRAME_SECONDS * 1000)
-            yield render_canvas(frame.copy(), display_model), duration_ms / 1000.0
+            yield render_canvas(frame.copy(), display_model, framing), duration_ms / 1000.0
     else:
-        yield render_canvas(img, display_model), STILL_FRAME_SECONDS
+        yield render_canvas(img, display_model, framing), STILL_FRAME_SECONDS
 
 
 def load_reel(path: str, display_model: int = HORIZONTAL, is_mirror: bool = False,
               engine_mode: str = DEFAULT_ENGINE_MODE, with_canvas: bool = False,
-              max_frames: int = PERF_MAX_FRAMES):
-    """Load an image/GIF/video for the given engine mode.
+              max_frames: int = PERF_MAX_FRAMES, framing: dict | None = None):
+    """Load an image/GIF/video for the given engine mode and media framing.
 
     Full mode + video returns a VideoStreamReel. Otherwise every frame is pre-rendered: with
     `with_canvas` (overlay on) the pre-rotation canvases are kept for the compositor; without it each
@@ -188,11 +220,13 @@ def load_reel(path: str, display_model: int = HORIZONTAL, is_mirror: bool = Fals
     """
     profile = ENGINE_PROFILES[engine_mode]
     quality, optimize = profile["quality"], profile["optimize"]
+    framing = normalize_framing(framing)
     if engine_mode == "full" and is_video(path):
-        return VideoStreamReel(path, display_model, is_mirror, quality, optimize)
+        return VideoStreamReel(path, display_model, is_mirror, quality, optimize, framing)
 
-    reel = Reel(path=path, display_model=display_model, is_mirror=is_mirror, quality=quality, optimize=optimize)
-    for canvas, duration in _source_canvases(path, display_model, max_frames):
+    reel = Reel(path=path, display_model=display_model, is_mirror=is_mirror, quality=quality, optimize=optimize,
+                framing=framing)
+    for canvas, duration in _source_canvases(path, display_model, max_frames, framing):
         if len(reel) >= max_frames:
             log.warning("%s truncated to %d frames (performance mode); use full mode for the whole video",
                         path, max_frames)

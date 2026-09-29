@@ -1,7 +1,7 @@
 # Maintainer: Ren <219476143+hereisren@users.noreply.github.com>
 pkgname=deepcool-lt360-git
 _pkgname=deepcool-lt360
-pkgver=0.1.0.r0.g0000000
+pkgver=0.3.0.r0.g0000000
 pkgrel=1
 pkgdesc="Linux driver, CLI and GUI for the DeepCool LT360 VISION AIO cooler's USB display (3633:002e)"
 arch=('any')

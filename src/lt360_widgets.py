@@ -47,6 +47,16 @@ def font(size: float, weight=QFont.Weight.Normal, family: str | None = None, spa
     return f
 
 
+def fit_font(text: str, width: float, size: float, weight=QFont.Weight.Normal, family: str | None = None,
+             spacing: float = 0.0, min_size: float = 4.5) -> QFont:
+    """Largest font <= `size` pt whose rendering of `text` fits in `width` px."""
+    f = font(size, weight, family, spacing)
+    while size > min_size and QFontMetrics(f).horizontalAdvance(text) > width:
+        size -= 0.5
+        f = font(size, weight, family, spacing)
+    return f
+
+
 def glow(p: QPainter, rect: QRectF, radius: float, color: QColor, layers: int = 5, spread: float = 2.0):
     """Cheap outer glow: stacked translucent rounded-rect strokes."""
     p.save()
@@ -72,7 +82,15 @@ def cover_rect(src: QSize, dst: QRectF) -> QRectF:
 # ---------- pump-block preview stage ----------
 
 class PumpStage(QWidget):
-    """The live panel image framed in a DeepCool-LT360-style pump head bezel."""
+    """The live panel image framed in a DeepCool-LT360-style pump head bezel.
+
+    In edit mode it also draws the custom HUD's element boxes (canvas coordinates, supplied by the
+    GUI) over the live frame and turns mouse/keyboard input into select / drag / nudge signals.
+    """
+    element_pressed = pyqtSignal(int)            # index of the element under the cursor, -1 for none
+    element_dragged = pyqtSignal(float, float)   # total canvas-pixel delta since the press
+    drag_finished = pyqtSignal()
+    nudged = pyqtSignal(int, int)                # arrow keys: canvas-pixel step
 
     def __init__(self):
         super().__init__()
@@ -80,9 +98,151 @@ class PumpStage(QWidget):
         self.vertical = False
         self.drop_active = False
         self.busy = False
+        self.edit_mode = False
+        self.edit_boxes: list[tuple[int, QRectF, str]] = []   # (element index, canvas rect, tag)
+        self.edit_selected = -1
+        self._edit_hover = -1
+        self._press: QPointF | None = None
+        self._corner: QWidget | None = None
         self._bezel_cache: tuple | None = None
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.setMinimumSize(420, 330)
+        self.setMinimumSize(400, 240)
+
+    def set_corner_widget(self, w: QWidget):
+        """Float a small control (the Edit HUD toggle) in the stage's top-right corner."""
+        self._corner = w
+        w.setParent(self)
+        self._place_corner()
+
+    def _place_corner(self):
+        if self._corner is not None:
+            hint = self._corner.sizeHint()
+            self._corner.setGeometry(self.width() - hint.width() - 2, 0, hint.width(), hint.height())
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._place_corner()
+
+    # ---- edit mode ----
+    def set_edit_mode(self, on: bool):
+        if on != self.edit_mode:
+            self.edit_mode = on
+            self._press, self._edit_hover = None, -1
+            self.setMouseTracking(on)
+            self.setFocusPolicy(Qt.FocusPolicy.StrongFocus if on else Qt.FocusPolicy.NoFocus)
+            self.unsetCursor()
+            self.update()
+
+    def set_edit_boxes(self, boxes: list[tuple[int, QRectF, str]], selected: int):
+        self.edit_boxes, self.edit_selected = boxes, selected
+        self.update()
+
+    def canvas_size(self) -> tuple[int, int]:
+        return (480, 854) if self.vertical else (854, 480)
+
+    def _scale(self) -> float:
+        return self._layout()[1].width() / self.canvas_size()[0]
+
+    def _to_canvas(self, pos: QPointF) -> QPointF:
+        screen = self._layout()[1]
+        s = self._scale()
+        return QPointF((pos.x() - screen.left()) / s, (pos.y() - screen.top()) / s)
+
+    def _to_screen(self, r: QRectF) -> QRectF:
+        screen = self._layout()[1]
+        s = self._scale()
+        return QRectF(screen.left() + r.left() * s, screen.top() + r.top() * s, r.width() * s, r.height() * s)
+
+    def element_at(self, pos: QPointF) -> int:
+        """Smallest box under the cursor wins, so a label can be grabbed off the panel it sits on."""
+        c = self._to_canvas(pos)
+        slack = 4 / max(self._scale(), 1e-6)   # a few screen pixels of grace for thin lines
+        hits = [(r.width() * r.height(), i) for i, r, _ in self.edit_boxes if r.adjusted(-slack, -slack, slack, slack).contains(c)]
+        return min(hits)[1] if hits else -1
+
+    def mousePressEvent(self, e):
+        if not self.edit_mode or e.button() != Qt.MouseButton.LeftButton:
+            return super().mousePressEvent(e)
+        self.setFocus()
+        idx = self.element_at(e.position())
+        self.element_pressed.emit(idx)
+        self._press = e.position() if idx >= 0 else None
+        if idx >= 0:
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+
+    def mouseMoveEvent(self, e):
+        if not self.edit_mode:
+            return super().mouseMoveEvent(e)
+        if self._press is not None:
+            s = self._scale()
+            d = e.position() - self._press
+            self.element_dragged.emit(d.x() / s, d.y() / s)
+            return
+        h = self.element_at(e.position())
+        if h != self._edit_hover:
+            self._edit_hover = h
+            self.setCursor(Qt.CursorShape.OpenHandCursor if h >= 0 else Qt.CursorShape.ArrowCursor)
+            self.update()
+
+    def mouseReleaseEvent(self, e):
+        if self.edit_mode and self._press is not None:
+            self._press = None
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            self.drag_finished.emit()
+            return
+        super().mouseReleaseEvent(e)
+
+    def keyPressEvent(self, e):
+        steps = {Qt.Key.Key_Left: (-1, 0), Qt.Key.Key_Right: (1, 0), Qt.Key.Key_Up: (0, -1), Qt.Key.Key_Down: (0, 1)}
+        if self.edit_mode and self.edit_selected >= 0 and e.key() in steps:
+            k = 10 if e.modifiers() & Qt.KeyboardModifier.ShiftModifier else 1
+            dx, dy = steps[e.key()]
+            self.nudged.emit(dx * k, dy * k)
+            return
+        super().keyPressEvent(e)
+
+    def _paint_edit(self, p: QPainter, screen: QRectF):
+        p.fillRect(screen, QColor(8, 8, 12, 70))
+        for i, r, tag in self.edit_boxes:
+            if i == self.edit_selected:
+                continue
+            sr = self._to_screen(r)
+            hover = i == self._edit_hover
+            p.setBrush(qc(VIOLET, 40) if hover else Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(qc(VIOLET_HI, 230 if hover else 130), 1.2, Qt.PenStyle.DashLine))
+            p.drawRoundedRect(sr, 3, 3)
+        sel = next(((r, tag) for i, r, tag in self.edit_boxes if i == self.edit_selected), None)
+        if sel is not None:
+            sr = self._to_screen(sel[0]).adjusted(-2, -2, 2, 2)
+            glow(p, sr, 4, qc(CYAN, 255), layers=4, spread=2)
+            p.setPen(QPen(QColor(CYAN), 1.8))
+            p.setBrush(qc(CYAN, 28))
+            p.drawRoundedRect(sr, 4, 4)
+            p.setBrush(QColor(CYAN))
+            p.setPen(Qt.PenStyle.NoPen)
+            for c in (sr.topLeft(), sr.topRight(), sr.bottomLeft(), sr.bottomRight()):
+                p.drawRect(QRectF(c.x() - 3, c.y() - 3, 6, 6))
+            p.setFont(font(7, QFont.Weight.Bold, spacing=1))
+            tw = QFontMetrics(p.font()).horizontalAdvance(sel[1]) + 12
+            ty = sr.top() - 17 if sr.top() - 17 > screen.top() else sr.bottom() + 3
+            tag_r = QRectF(max(screen.left(), min(sr.left(), screen.right() - tw)), ty, tw, 15)
+            p.setBrush(QColor(CYAN))
+            p.drawRoundedRect(tag_r, 4, 4)
+            p.setPen(QColor("#041016"))
+            p.drawText(tag_r, Qt.AlignmentFlag.AlignCenter, sel[1])
+        # mode banner
+        p.setFont(font(7.5, QFont.Weight.Bold, spacing=2))
+        fm = QFontMetrics(p.font())
+        txt = next((t for t in ("EDIT HUD  ·  CLICK TO SELECT  ·  DRAG / ARROW KEYS TO MOVE",
+                                "EDIT HUD  ·  CLICK  ·  DRAG TO MOVE") if fm.horizontalAdvance(t) + 22 <= screen.width() - 12),
+                   "EDIT HUD")
+        tw = fm.horizontalAdvance(txt) + 22
+        banner = QRectF(screen.center().x() - tw / 2, screen.top() + 8, tw, 20)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(8, 8, 12, 200))
+        p.drawRoundedRect(banner, 10, 10)
+        p.setPen(qc(VIOLET_HI))
+        p.drawText(banner, Qt.AlignmentFlag.AlignCenter, txt)
 
     def set_image(self, img: QImage):
         self.image = img
@@ -208,11 +368,13 @@ class PumpStage(QWidget):
         gl.setColorAt(0, QColor(255, 255, 255, 26))
         gl.setColorAt(0.35, QColor(255, 255, 255, 0))
         p.fillRect(screen, QBrush(gl))
+        if self.edit_mode:
+            self._paint_edit(p, screen)
         if self.busy:
             p.fillRect(screen, QColor(8, 8, 12, 150))
             p.setPen(qc(VIOLET_HI))
             p.setFont(font(12, QFont.Weight.Bold, spacing=5))
-            p.drawText(screen, Qt.AlignmentFlag.AlignCenter, "LOADING…")
+            p.drawText(screen, Qt.AlignmentFlag.AlignCenter, "LOADING...")
         if self.drop_active:
             p.fillRect(screen, qc(VIOLET, 90))
         p.restore()
@@ -372,10 +534,13 @@ class PillToggle(QWidget):
 
 
 class NeonSlider(QSlider):
-    """Glowing groove + handle. Click-to-jump and drag both update at paint rate."""
+    """Glowing groove + handle. Click-to-jump and drag both update at paint rate.
+    `bipolar` fills from the middle of the range (for signed values such as pan offsets).
+    """
 
-    def __init__(self):
+    def __init__(self, bipolar: bool = False):
         super().__init__(Qt.Orientation.Horizontal)
+        self.bipolar = bipolar
         self._hover = False
         self.setFixedHeight(34)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -421,7 +586,11 @@ class NeonSlider(QSlider):
         p.setBrush(QColor("#1a1727"))
         p.drawRoundedRect(groove, 3, 3)
         hx = self.MARGIN + span * f
-        fill = QRectF(self.MARGIN, cy - 3, max(0.0, hx - self.MARGIN), 6)
+        x0 = self.MARGIN + span / 2 if self.bipolar else self.MARGIN
+        fill = QRectF(min(x0, hx), cy - 3, abs(hx - x0), 6)
+        if self.bipolar:
+            p.setBrush(qc(MUTED, 120))
+            p.drawRect(QRectF(x0 - 0.75, cy - 7, 1.5, 14))
         if fill.width() > 1:
             glow(p, fill, 3, qc(VIOLET, 255), layers=4, spread=2.5)
             g = QLinearGradient(fill.topLeft(), fill.topRight())
@@ -486,9 +655,10 @@ class Chip(QWidget):
 # ---------- header ----------
 
 class Banner(QWidget):
-    def __init__(self, cjk_family: str | None):
+    def __init__(self, cjk_family: str | None, version: str = ""):
         super().__init__()
         self.cjk = cjk_family
+        self.version = version
         self.setFixedHeight(92)
 
     def paintEvent(self, _):
@@ -529,6 +699,17 @@ class Banner(QWidget):
         p.drawText(QPointF(x, base), t1)
         p.setFont(cf)
         p.drawText(QPointF(x + fm_b.horizontalAdvance(t1), base), t2)
+
+        if self.version:
+            vf = font(8, QFont.Weight.Bold, spacing=1.6)
+            vt = f"v{self.version}"
+            vr = QRectF(badge.right() + 12, 22, QFontMetrics(vf).horizontalAdvance(vt) + 20, 22)
+            p.setPen(QPen(qc(CYAN, 150), 1))
+            p.setBrush(qc(CYAN, 22))
+            p.drawRoundedRect(vr, 11, 11)
+            p.setPen(QColor(CYAN))
+            p.setFont(vf)
+            p.drawText(vr, Qt.AlignmentFlag.AlignCenter, vt)
 
         p.setPen(qc(MUTED))
         p.setFont(font(9.5, spacing=0.8))
@@ -643,7 +824,7 @@ class MediaCard(QWidget):
         else:
             p.setPen(qc(DIM))
             p.setFont(font(8, QFont.Weight.DemiBold, spacing=2))
-            p.drawText(t, Qt.AlignmentFlag.AlignCenter, "…" if self.exists else "MISSING")
+            p.drawText(t, Qt.AlignmentFlag.AlignCenter, "..." if self.exists else "MISSING")
         p.restore()
 
         ext = os.path.splitext(self.path)[1].lstrip(".").upper()
@@ -799,44 +980,67 @@ class ThemeCard(QWidget):
         p.fillRect(bar, QColor(6, 6, 10, 215))
         p.fillRect(QRectF(bar.left(), bar.top(), bar.width(), 2), acc2)
         pixel = self.key == "pixelworld"
-        big = font(15 if not pixel else 13, QFont.Weight.Bold, PIXEL if pixel else SANS)
-        p.setFont(big)
-        p.setPen(QColor(TEXT))
-        p.drawText(QRectF(bar.left() + 8, bar.top() + 4, bar.width() * 0.36, bar.height() - 14),
-                   Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                   format_metric(self.primary, self.sensors, self.celsius))
-        p.setFont(font(5.5, QFont.Weight.DemiBold, spacing=1))
-        p.setPen(acc2)
-        p.drawText(QRectF(bar.left() + 8, bar.bottom() - 13, 60, 11), Qt.AlignmentFlag.AlignLeft,
-                   METRIC_SHORT.get(self.primary, ""))
-        sec = [m for m in self.secondary if m and m != "off"][:3]
-        slot = (bar.width() * 0.6 - 6) / max(1, len(sec))
-        for i, m in enumerate(sec):
-            x = bar.right() - 6 - slot * (len(sec) - i)
-            p.setFont(font(6.8 if not pixel else 6, QFont.Weight.DemiBold, PIXEL if pixel else SANS))
+        family = PIXEL if pixel else SANS
+        show_primary = self.primary not in (None, "off")
+        primary_w = bar.width() * 0.36 if show_primary else 0.0
+        if show_primary:
+            value = format_metric(self.primary, self.sensors, self.celsius)
+            p.setFont(fit_font(value, primary_w - 6, 15 if not pixel else 13, QFont.Weight.Bold, family))
             p.setPen(QColor(TEXT))
-            p.drawText(QRectF(x, bar.top() + 6, slot, bar.height() - 20), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter,
-                       format_metric(m, self.sensors, self.celsius))
-            p.setFont(font(5, QFont.Weight.DemiBold, spacing=0.8))
+            p.drawText(QRectF(bar.left() + 6, bar.top() + 4, primary_w - 6, bar.height() - 14),
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, value)
+            label = METRIC_SHORT.get(self.primary, "")
+            p.setFont(fit_font(label, primary_w - 6, 5.5, QFont.Weight.DemiBold, spacing=1))
             p.setPen(acc2)
-            p.drawText(QRectF(x, bar.bottom() - 13, slot, 11), Qt.AlignmentFlag.AlignHCenter, METRIC_SHORT.get(m, ""))
+            p.drawText(QRectF(bar.left() + 6, bar.bottom() - 13, primary_w - 6, 11), Qt.AlignmentFlag.AlignLeft, label)
+        # secondaries share what the primary leaves; every string shrinks to its slot so nothing overlaps
+        sec = [m for m in self.secondary if m and m != "off"][:3]
+        slot = (bar.width() - primary_w - 8) / max(1, len(sec))
+        for i, m in enumerate(sec):
+            x = bar.right() - 4 - slot * (len(sec) - i)
+            p.save()
+            p.setClipRect(QRectF(x + 0.5, bar.top(), slot - 1, bar.height()))   # never bleed into a neighbour
+            value = format_metric(m, self.sensors, self.celsius)
+            p.setFont(fit_font(value, slot - 3, 6.8 if not pixel else 6, QFont.Weight.DemiBold, family, min_size=4))
+            p.setPen(QColor(TEXT))
+            p.drawText(QRectF(x, bar.top() + 6, slot, bar.height() - 20),
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter, value)
+            label = METRIC_SHORT.get(m, "")
+            p.setFont(fit_font(label, slot - 3, 5, QFont.Weight.DemiBold, min_size=4))
+            p.setPen(acc2)
+            p.drawText(QRectF(x, bar.bottom() - 13, slot, 11), Qt.AlignmentFlag.AlignHCenter, label)
+            p.restore()
         p.restore()
         self._paint_footer(p, r, acc, acc2)
 
     @staticmethod
     def _paint_custom_preview(p, scr, acc, acc2):
-        """Stylised HUD: two translucent pills with meter bars, a gold clock chip and a JSON hint."""
-        p.setPen(QPen(qc(acc, 220), 1.2))
-        p.setBrush(qc(QColor(12, 6, 20), 200))
-        pill_w, pill_h = scr.width() * 0.42, scr.height() * 0.24
-        for i, (col, frac) in enumerate(((acc, 0.7), (acc2, 0.45))):
-            pill = QRectF(scr.left() + 7 + i * (pill_w + 6), scr.top() + 7, pill_w, pill_h)
-            p.setPen(QPen(qc(col, 220), 1.2))
-            p.setBrush(qc(QColor(12, 6, 20), 200))
-            p.drawRoundedRect(pill, pill_h / 2, pill_h / 2)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(col)
-            p.drawRoundedRect(QRectF(pill.left() + 8, pill.center().y() - 2, (pill.width() - 16) * frac, 4), 2, 2)
+        """Stylised HUD: a ring gauge, a sparkline, a gold clock chip and a JSON hint."""
+        d = min(scr.height() * 0.62, scr.width() * 0.42)
+        ring = QRectF(scr.left() + 8, scr.top() + 8, d, d).adjusted(3, 3, -3, -3)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(qc("#2a2540"), 4, cap=Qt.PenCapStyle.RoundCap))
+        p.drawArc(ring, -135 * 16, -270 * 16)
+        p.setPen(QPen(acc, 4, cap=Qt.PenCapStyle.RoundCap))
+        p.drawArc(ring, -135 * 16, -190 * 16)
+        p.setPen(QColor(TEXT))
+        p.setFont(font(6.5, QFont.Weight.Bold))
+        p.drawText(ring, Qt.AlignmentFlag.AlignCenter, "63°")
+        spark = QRectF(ring.right() + 8, scr.top() + 10, scr.right() - ring.right() - 16, d * 0.62)
+        p.setPen(QPen(qc(acc2, 90), 1))
+        p.setBrush(qc(QColor(12, 6, 20), 190))
+        p.drawRoundedRect(spark, 4, 4)
+        ys = (0.6, 0.45, 0.55, 0.3, 0.4, 0.2, 0.35, 0.25)
+        path = QPainterPath()
+        for i, f in enumerate(ys):
+            pt = QPointF(spark.left() + 3 + i * (spark.width() - 6) / (len(ys) - 1), spark.top() + 3 + f * (spark.height() - 6))
+            if i == 0:
+                path.moveTo(pt)
+            else:
+                path.lineTo(pt)
+        p.setPen(QPen(QColor(CYAN), 1.3))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
         chip = QRectF(scr.right() - 50, scr.bottom() - 22, 43, 15)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(qc(acc2, 230))
@@ -846,7 +1050,7 @@ class ThemeCard(QWidget):
         p.drawText(chip, Qt.AlignmentFlag.AlignCenter, "12:34")
         p.setPen(qc(acc, 230))
         p.setFont(font(9, QFont.Weight.Bold, PIXEL))
-        p.drawText(QRectF(scr.left() + 9, scr.center().y() - 6, scr.width() * 0.6, 30),
+        p.drawText(QRectF(scr.left() + 9, scr.bottom() - 26, scr.width() * 0.5, 22),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, "{ }")
 
     def _paint_footer(self, p, r, acc, acc2):

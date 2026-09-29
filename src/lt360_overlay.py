@@ -114,6 +114,30 @@ def format_metric(key: str, data: dict, celsius: bool) -> str:
     return str(value)
 
 
+READOUT_METRICS = ("cpu_temp", "gpu_temp", "cpu_load", "gpu_load", "time")
+
+
+def normalize_readout(primary: str | None, secondary) -> tuple[str, list[str]]:
+    """Primary + exactly three secondary slots with no metric shown twice.
+
+    A repeated metric (e.g. an old config's ["time", "cpu_temp", "cpu_temp"]) is replaced with the
+    first metric not on screen yet, in READOUT_METRICS order -- so that one becomes TIME / CPU / GPU.
+    """
+    primary = primary if primary in READOUT_METRICS or primary == "off" else "cpu_temp"
+    seen = {primary} - {"off"}
+    slots = [m for m in list(secondary or [])[:3]] + ["off"] * max(0, 3 - len(secondary or []))
+    out = []
+    for m in slots:
+        if m not in READOUT_METRICS:
+            m = "off"
+        elif m in seen:
+            m = next((c for c in READOUT_METRICS if c not in seen), "off")
+        if m != "off":
+            seen.add(m)
+        out.append(m)
+    return primary, out
+
+
 def default_overlay_config() -> dict:
     return {
         "enabled": False,
@@ -136,7 +160,8 @@ class OverlayRenderer:
             import lt360_custom  # lazy: it imports this module for the font paths
             elements = custom.elements_for(size) if custom is not None else []
             return lt360_custom.render(size, elements, sensor_data, celsius,
-                                       custom.version if custom is not None else 0)
+                                       custom.version if custom is not None else 0,
+                                       custom.history if custom is not None else None)
         theme = THEMES.get(config.get("theme", "codezero"), THEMES["codezero"])
         text_color = tuple(config["text_color"]) if config.get("text_color") else theme["text"]
         accent = theme["accent"]
