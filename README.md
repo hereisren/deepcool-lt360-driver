@@ -66,6 +66,22 @@ DeepCool "VISION" panels sharing this protocol family may work but are
 untested; see `PROTOCOL.md` for the full reverse-engineering notes if you want
 to check your own device against them.
 
+### Sensor telemetry: help wanted
+
+| Hardware | Status |
+|---|---|
+| AMD CPU (`k10temp`) + AMD Radeon dGPU with Ryzen iGPU (`amdgpu`) | Verified on real hardware |
+| AMD APU-only, Intel CPU (`coretemp`), laptop thermal zones | Implemented, tested against simulated sysfs only |
+| **NVIDIA** (`nvidia-smi`) | Implemented, tested against a simulated `nvidia-smi` only; **may have bugs** |
+| **Intel Arc / Iris** (`xe`, `i915`) | Implemented, tested against simulated sysfs only; **may have bugs**; GPU load is not exposed by these drivers |
+
+If you run an NVIDIA or Intel GPU (or any combination above that isn't verified yet),
+**reports are very welcome**, whether it works or not. Please
+[open an issue](https://github.com/hereisren/deepcool-lt360-driver/issues) with your
+CPU/GPU, distro, the output of `lt360ctl status` (the `sensors` block), and
+`journalctl --user -u deepcool-lt360 -b | grep -i sensors` (the daemon logs which
+CPU sensor and GPU card it picked).
+
 ## Install
 
 ### Arch Linux / AUR
