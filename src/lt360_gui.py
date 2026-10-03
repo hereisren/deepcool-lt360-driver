@@ -13,6 +13,7 @@ import base64
 import copy
 import json
 import os
+import shlex
 import socket
 import subprocess
 import sys
@@ -20,13 +21,17 @@ import threading
 import time
 
 from PyQt6.QtCore import QObject, QRectF, QRunnable, Qt, QThread, QThreadPool, QTimer, pyqtSignal
-from PyQt6.QtGui import QActionGroup, QColor, QFontDatabase, QIcon, QImage, QPainter, QPen, QPixmap, QTransform
+from PyQt6.QtGui import (
+    QActionGroup, QColor, QFontDatabase, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTransform,
+)
 from PyQt6.QtWidgets import (
     QApplication, QColorDialog, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QMenu, QPushButton, QScrollArea, QSpinBox, QSystemTrayIcon, QVBoxLayout, QWidget,
+    QMainWindow, QMenu, QPushButton, QScrollArea, QSpinBox, QStackedWidget, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
+import lt360_cast as K
 import lt360_custom as C
+import lt360_fx as fx
 from lt360_common import __version__, find_data_dir, find_icon_file
 from lt360_ipc import default_socket_path
 from lt360_overlay import normalize_readout
@@ -225,7 +230,11 @@ class _Job(QRunnable):
             result = self.fn()
         except Exception as e:  # noqa: BLE001 - surfaced to the callback as data
             result = e
-        self.emitter.done.emit(result)
+        try:
+            self.emitter.done.emit(result)
+        except RuntimeError:
+            pass   # the window closed while this job ran: its emitter is already deleted. An exception escaping
+                   # a QRunnable makes PyQt abort the whole process ("_Emitter has been deleted" crash on exit)
 
 
 def run_async(parent: QObject, fn, callback):
@@ -269,11 +278,10 @@ def _make_thumbnail(path: str) -> QImage:
 # Layout helpers
 # ---------------------------------------------------------------------------
 
-def card(title: str, right: QWidget | None = None) -> tuple[QFrame, QVBoxLayout]:
-    frame = QFrame()
-    frame.setObjectName("card")
+def card(title: str, right: QWidget | None = None) -> tuple[QWidget, QVBoxLayout]:
+    frame = W.Card()
     lay = QVBoxLayout(frame)
-    lay.setContentsMargins(18, 14, 18, 18)
+    lay.setContentsMargins(22, 18, 22, 22)   # the card paints itself inset by 3.5 px (room for its hover glow)
     lay.setSpacing(12)
     head = QHBoxLayout()
     lbl = QLabel(title)
@@ -303,6 +311,7 @@ def value_badge(text: str, width: int = 62) -> QLabel:
 def _repolish(w: QWidget):
     w.style().unpolish(w)
     w.style().polish(w)
+    w.update()
 
 
 def load_prefs() -> dict:
@@ -445,7 +454,7 @@ class HudInspector(QFrame):
             self.text_edit.hide()
             self._paint_swatch(None)
             return
-        self.tag.set(f"{str(self._kind).upper()} #{index + 1}", W.CYAN)
+        self.tag.set(f"{str(self._kind).upper()} #{index + 1}", W.ACCENT_HI)
         ax, ay = ("x1", "y1") if self._kind == "line" else ("x", "y")
         self._set_spin(self.x_spin, el.get(ax, 0))
         self._set_spin(self.y_spin, el.get(ay, 0))
@@ -476,7 +485,7 @@ class HudInspector(QFrame):
         c = _qcolor(value) if value is not None else QColor(W.BORDER)
         fg = "#000000" if c.lightness() > 150 else "#ffffff"
         self.color_btn.setStyleSheet(f"QPushButton#swatch {{ background: {c.name()}; color: {fg}; "
-                                     f"border: 1px solid {W.VIOLET_HI}; }}")
+                                     f"border: 1px solid {W.ACCENT_HI}; }}")
 
     def _on_xy(self, *_):
         self.moved_to.emit(self.x_spin.value(), self.y_spin.value())
@@ -691,7 +700,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(APP_TITLE)
         self.resize(1280, 900)
-        self.setMinimumSize(1100, 720)
+        self.setMinimumSize(1180, 740)
         self.setAcceptDrops(True)
 
         self._touched: dict[str, float] = {}
@@ -708,6 +717,7 @@ class MainWindow(QMainWindow):
         self._custom_error: str | None = None
         self._service_busy = False
         self._service_running = False
+        self._cast_busy = False
         self._metric_values = ["cpu_temp", "gpu_temp", "cpu_load", "time"]   # primary + 3 slots, last applied
         self._prefs = load_prefs()
         self._close_to_tray = bool(self._prefs.get("close_to_tray", False)) or tray_session
@@ -736,19 +746,45 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ UI
 
     def _build_ui(self):
-        central = QWidget()
+        central = W.AmbientBG()
         central.setObjectName("root")
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setContentsMargins(24, 14, 24, 14)
-        root.setSpacing(10)
-        root.addWidget(W.Banner(self._cjk_family, __version__))
+        root.setContentsMargins(24, 12, 24, 10)
+        root.setSpacing(8)
+
+        head = QHBoxLayout()
+        head.setSpacing(16)
+        head.addWidget(W.Banner(self._cjk_family, __version__), 1)
+        head.addLayout(self._build_header_chips())
+        root.addLayout(head)
 
         body = QHBoxLayout()
-        body.setSpacing(20)
+        body.setSpacing(18)
         root.addLayout(body, 1)
-        body.addLayout(self._build_stage_column(), 11)
+        body.addLayout(self._build_stage_column(), 9)
 
+        right = QHBoxLayout()
+        right.setSpacing(12)
+        self.nav = W.NavRail([("DISPLAY", "display"), ("HUD", "hud"), ("CAST", "cast"), ("SYSTEM", "system")])
+        self.nav.selected.connect(self._show_page)
+        right.addWidget(self.nav, 0, Qt.AlignmentFlag.AlignTop)
+        self.pages = QStackedWidget()
+        self._page_cards: list[list[QWidget]] = []
+        for builders in ((self._build_engine_card, self._build_media_card), (self._build_theme_card,),
+                         (self._build_cast_card,), (self._build_system_card,)):
+            self.pages.addWidget(self._make_page([build() for build in builders]))
+        right.addWidget(self.pages, 1)
+        body.addLayout(right, 10)
+
+        page = int(self._prefs.get("page", 0))
+        page = page if 0 <= page < self.pages.count() else 0
+        self.nav.set_index(page, animate=False)
+        self.pages.setCurrentIndex(page)
+        for n in range(4):
+            QShortcut(QKeySequence(f"Ctrl+{n + 1}"), self, activated=lambda n=n: self._goto_page(n))
+
+    def _make_page(self, cards: list) -> QScrollArea:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -757,32 +793,50 @@ class MainWindow(QMainWindow):
         inner.setObjectName("scrollInner")
         col = QVBoxLayout(inner)
         col.setContentsMargins(0, 0, 8, 0)
-        col.setSpacing(14)
-        col.addWidget(self._build_engine_card())
-        col.addWidget(self._build_media_card())
-        col.addWidget(self._build_theme_card())
+        col.setSpacing(12)
+        for c in cards:
+            col.addWidget(c)
         col.addStretch()
         scroll.setWidget(inner)
-        scroll.setMinimumWidth(510)   # media grid + framing + theme cards never get squeezed/clipped
-        body.addWidget(scroll, 10)
+        scroll.setMinimumWidth(470)   # media grid + framing + theme cards never get squeezed/clipped
+        self._page_cards.append(cards)
+        return scroll
+
+    def _goto_page(self, i: int):
+        self.nav.set_index(i)
+        self._show_page(i)
+
+    def _show_page(self, i: int):
+        if i == self.pages.currentIndex():
+            return
+        self.pages.setCurrentIndex(i)
+        fx.reveal(self._page_cards[i], delay_ms=40, duration_ms=220)
+        self._prefs["page"] = i
+        save_prefs(self._prefs)
+        if i == 2:
+            self._refresh_ws_info()
+
+    _revealed = False
 
     _cjk_family: str | None = None   # set by main() after font registration
 
+    def _build_header_chips(self) -> QHBoxLayout:
+        lay = QHBoxLayout()
+        lay.setSpacing(8)
+        self.pill_daemon = W.Chip("DAEMON ...", W.MUTED, pulse=True)   # ASCII dots: JZFS Sans draws U+2026 as one dot
+        self.pill_usb = W.Chip("USB ...", W.MUTED)
+        self.pill_cast = W.Chip("CAST OFF", W.MUTED)
+        self.pill_fps = W.Chip("-- FPS", W.ACCENT_HI, dot=False)
+        self.pill_pkt = W.Chip("-- PKT", W.ACCENT_HI, dot=False)
+        for c in (self.pill_daemon, self.pill_usb, self.pill_cast, self.pill_fps, self.pill_pkt):
+            lay.addWidget(c)
+        return lay
+
     def _build_stage_column(self) -> QVBoxLayout:
-        """Left column, never scrolls: status pills, the pump preview, the HUD inspector (edit mode
-        only) and the Hardware Deck, so every hardware/service control is always on screen."""
+        """Left column, never scrolls: the live pump with its idle effects, the HUD inspector (edit mode
+        only) and the Hardware Deck, so the everyday controls are always on screen."""
         col = QVBoxLayout()
         col.setSpacing(10)
-
-        pills = QHBoxLayout()
-        self.pill_daemon = W.Chip("DAEMON ...", W.MUTED)   # ASCII dots: JZFS Sans draws U+2026 as one dot
-        self.pill_usb = W.Chip("USB ...", W.MUTED)
-        self.pill_fps = W.Chip("-- FPS", W.CYAN, dot=False)
-        self.pill_pkt = W.Chip("-- PKT", W.CYAN, dot=False)
-        for c in (self.pill_daemon, self.pill_usb, self.pill_fps, self.pill_pkt):
-            pills.addWidget(c)
-        pills.addStretch()
-        col.addLayout(pills)
 
         self.stage = W.PumpStage()
         col.addWidget(self.stage, 1)
@@ -795,10 +849,11 @@ class MainWindow(QMainWindow):
         self.inspector = HudInspector()
         self.inspector.hide()
         col.addWidget(self.inspector)
-        col.addWidget(self._build_hardware_deck())
+        self._deck = self._build_hardware_deck()
+        col.addWidget(self._deck)
         return col
 
-    def _build_hardware_deck(self) -> QFrame:
+    def _build_hardware_deck(self) -> QWidget:
         self.svc_chip = W.Chip("SERVICE ...", W.MUTED)
         frame, lay = card("HARDWARE DECK", self.svc_chip)
         lay.setSpacing(10)
@@ -833,32 +888,75 @@ class MainWindow(QMainWindow):
         row.addSpacing(4)
         row.addWidget(self.unit_seg)
         lay.addLayout(row)
+        return frame
+
+    def _build_system_card(self) -> QWidget:
+        frame, lay = card("DAEMON & SYSTEM")
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(field_label("DAEMON"))
+        self.svc_restart = W.NeonButton("Restart")
+        self.svc_restart.setObjectName("primary")
+        self.svc_restart.clicked.connect(lambda: self._service_call("restart"))
+        self.svc_power = W.NeonButton("Stop")
+        self.svc_power.setObjectName("danger")
+        self.svc_power.clicked.connect(lambda: self._service_call("stop" if self._service_running else "start"))
+        for b in (self.svc_restart, self.svc_power):
+            b.setMinimumWidth(96)
+            row.addWidget(b)
+        row.addStretch()
+        lay.addLayout(row)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        self.autostart_toggle = W.PillToggle("Autostart")
+        self.autostart_toggle.setToolTip("Start the LT360 daemon on login (systemctl --user enable)")
+        self.autostart_toggle.toggled.connect(self._on_autostart_toggled)
+        self.tray_toggle = W.PillToggle("Close to tray")
+        self.tray_toggle.setToolTip("Closing the window keeps the GUI running in the system tray")
+        self.tray_toggle.set_on(self._close_to_tray)
+        self.tray_toggle.toggled.connect(self._on_tray_toggle)
+        row.addWidget(self.autostart_toggle)
+        row.addWidget(self.tray_toggle)
+        row.addStretch()
+        lay.addLayout(row)
 
         rule = QFrame()
         rule.setObjectName("deckRule")
         rule.setFixedHeight(1)
         lay.addWidget(rule)
 
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        row.addWidget(field_label("DAEMON"))
-        self.svc_restart = QPushButton("Restart")
-        self.svc_restart.setObjectName("primary")
-        self.svc_restart.clicked.connect(lambda: self._service_call("restart"))
-        self.svc_power = QPushButton("Stop")
-        self.svc_power.setObjectName("danger")
-        self.svc_power.clicked.connect(lambda: self._service_call("stop" if self._service_running else "start"))
-        for b in (self.svc_restart, self.svc_power):
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setMinimumWidth(92)
-            row.addWidget(b)
-        row.addStretch()
-        self.autostart_toggle = W.PillToggle("Autostart")
-        self.autostart_toggle.setToolTip("Start the LT360 daemon on login (systemctl --user enable)")
-        self.autostart_toggle.toggled.connect(self._on_autostart_toggled)
-        row.addWidget(self.autostart_toggle)
-        lay.addLayout(row)
+        lay.addWidget(field_label("ABOUT"))
+        for name, value in (("VERSION", f"v{__version__}"), ("SOCKET", DEFAULT_SOCKET_PATH),
+                            ("CONFIG", C.CONFIG_DIR), ("SERVICE", SERVICE_NAME)):
+            r = QHBoxLayout()
+            r.setSpacing(10)
+            k = field_label(name)
+            k.setFixedWidth(78)
+            v = QLabel(value)
+            v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            v.setStyleSheet(f"color: {W.TEXT}; font-size: 12px;")
+            v.setWordWrap(True)
+            r.addWidget(k)
+            r.addWidget(v, 1)
+            lay.addLayout(r)
+        actions = QHBoxLayout()
+        actions.setSpacing(10)
+        open_cfg = W.NeonButton("Open config folder")
+        open_cfg.clicked.connect(lambda: run_async(self, lambda: subprocess.Popen(["xdg-open", C.CONFIG_DIR]) and None,
+                                                   lambda _r: None))
+        actions.addWidget(open_cfg)
+        actions.addStretch()
+        lay.addLayout(actions)
         return frame
+
+    def _on_tray_toggle(self, on: bool):
+        self.tray_toggle.set_on(on)
+        self._on_close_to_tray(on)
+        if self.tray is not None:
+            self._tray_close.blockSignals(True)
+            self._tray_close.setChecked(on)
+            self._tray_close.blockSignals(False)
 
     def _build_engine_card(self) -> QFrame:
         frame, lay = card("ENGINE MODE")
@@ -875,6 +973,297 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.engine_note)
         return frame
 
+    def _build_cast_card(self) -> QWidget:
+        self.cast_chip = W.Chip("CAST OFF", W.MUTED)
+        frame, lay = card("SECOND MONITOR", self.cast_chip)
+        self.cast_state = QLabel("OFFLINE")
+        self.cast_state.setObjectName("bigValue")
+        self.cast_detail = QLabel("Use the pump as a live second monitor: a virtual 854x480 screen to drag windows "
+                                  "onto, or a mirror of a real one. Needs wf-recorder; the virtual monitor needs Hyprland.")
+        self.cast_detail.setObjectName("fieldLabel")
+        self.cast_detail.setWordWrap(True)
+        lay.addWidget(self.cast_state)
+        lay.addWidget(self.cast_detail)
+
+        lay.addWidget(field_label("WORKSPACE LOCK"))
+        self.ws_picker = W.WorkspacePicker(10)
+        self.ws_picker.set_selected(int(self._prefs.get("cast_ws", 10)), animate=False)
+        self.ws_picker.chosen.connect(self._on_ws_chosen)
+        self.ws_picker.blocked.connect(lambda _ws, msg: self._cast_note(msg, True))
+        lay.addWidget(self.ws_picker)
+        hint = QLabel("The panel is locked to this workspace while casting; windows opened or sent there appear on "
+                      "it. Only empty workspaces can be picked, so your own never move. Changes apply live.")
+        hint.setObjectName("fieldLabel")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addWidget(field_label("SOURCE"))
+        self.cast_source = QComboBox()
+        self.cast_source.addItem("New virtual monitor", None)
+        self.cast_source.currentIndexChanged.connect(self._on_cast_source_changed)
+        self.cast_source.activated.connect(lambda _i: self._restart_cast_soon())   # user picks, not programmatic adds
+        row.addWidget(self.cast_source, 1)
+        lay.addLayout(row)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addWidget(field_label("UI ZOOM"))
+        self.cast_scale = W.SegmentedControl([("1x", 1.0), ("1.25x", 1.25), ("1.5x", 1.5), ("2x", 2.0)])
+        self.cast_scale.setToolTip("Bigger icons and text on the virtual monitor (less room for windows)")
+        self.cast_scale.set_value(float(self._prefs.get("cast_zoom", 1.0)))
+        self.cast_scale.changed.connect(lambda v: (self._save_cast_pref("cast_zoom", float(v)), self._restart_cast_soon()))
+        row.addWidget(self.cast_scale, 1)
+        lay.addLayout(row)
+
+        self.cast_mouse = W.PillToggle("Mouse can enter it")
+        self.cast_mouse.set_on(bool(self._prefs.get("cast_mouse", True)))
+        self.cast_mouse.setToolTip("On: the virtual monitor sits right of your screen and the mouse can cross onto "
+                                   "it. Off: out of reach, so it can never take your focus.")
+        self.cast_mouse.toggled.connect(self.cast_mouse.set_on)
+        self.cast_mouse.toggled.connect(self._on_mouse_toggled)
+        lay.addWidget(self.cast_mouse)
+
+        self.cast_button = W.NeonButton("Start casting")
+        self.cast_button.setObjectName("primary")
+        self.cast_button.setMinimumHeight(42)
+        self.cast_button.clicked.connect(self._on_cast_clicked)
+        lay.addWidget(self.cast_button)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.cast_cmd = QLineEdit()
+        self.cast_cmd.setPlaceholderText("open on the pump, e.g. kitty or firefox")
+        self.cast_cmd.setEnabled(False)
+        self.cast_cmd.returnPressed.connect(self._on_cast_launch)
+        self.cast_launch = W.NeonButton("Open")
+        self.cast_launch.setEnabled(False)
+        self.cast_launch.clicked.connect(self._on_cast_launch)
+        row.addWidget(self.cast_cmd, 1)
+        row.addWidget(self.cast_launch)
+        lay.addLayout(row)
+
+        self.cast_msg = QLabel("")
+        self.cast_msg.setObjectName("fieldLabel")
+        self.cast_msg.setWordWrap(True)
+        lay.addWidget(self.cast_msg)
+
+        run_async(self, K.list_outputs, self._on_cast_outputs)   # hyprctl: never on the UI thread
+        self._restart_timer = QTimer(self)
+        self._restart_timer.setSingleShot(True)
+        self._restart_timer.timeout.connect(self._restart_cast)
+        self._ws_timer = QTimer(self)
+        self._ws_timer.timeout.connect(self._refresh_ws_info)
+        self._ws_timer.start(3000)
+        self._refresh_ws_info()
+        return frame
+
+    def _save_cast_pref(self, key: str, value):
+        self._prefs[key] = value
+        save_prefs(self._prefs)
+
+    def _cast_note(self, text: str, error: bool = False):
+        self.cast_msg.setText(text)
+        self.cast_msg.setStyleSheet(f"color: {W.BAD};" if error else "")
+
+    def _on_cast_outputs(self, result):
+        if isinstance(result, Exception):
+            return   # no Hyprland: only the virtual-monitor entry (which will explain itself on click)
+        for name in result:
+            self.cast_source.addItem(f"Mirror {name}", name)
+
+    def _on_cast_source_changed(self, _i):
+        mirror = self.cast_source.currentData() is not None
+        self.ws_picker.set_enabled_note("Mirroring a real screen: it keeps its own workspaces" if mirror else "")
+
+    def _refresh_ws_info(self):
+        """Occupancy for the picker (hyprctl, off the UI thread). Only while the Cast page is on screen."""
+        if getattr(self, "pages", None) is None or self.pages.currentIndex() != 2 or not self.isVisible() \
+                or self.isMinimized() or getattr(self, "_ws_busy", False):
+            return
+        self._ws_busy = True
+
+        def done(result):
+            self._ws_busy = False
+            if not isinstance(result, Exception):
+                self.ws_picker.set_info(result["workspaces"], result["real"])
+        run_async(self, K.workspace_info, done)
+
+    def _cast_rpc(self):
+        client = DaemonClient(self.worker.client.sock_path)
+        return lambda request: client.call(request, timeout=20.0)
+
+    def _cast_finished(self, text: str, error: bool = False):
+        self._cast_busy = False
+        self.cast_button.setEnabled(True)
+        self.ws_picker.setEnabled(True)
+        self._cast_note(text, error)
+        self._apply_cast_status(self._status)
+        self._ws_busy = False
+        self._refresh_ws_info()
+
+    def _on_ws_chosen(self, ws: int):
+        if self._cast_busy:
+            return
+        state = K.load_state()
+        casting_virtual = bool((self._status or {}).get("cast")) and bool(state and state.get("created"))
+        if not casting_virtual:
+            self.ws_picker.set_selected(ws)
+            self._save_cast_pref("cast_ws", ws)
+            self._cast_note(f"Workspace {ws} will be used the next time you start casting.")
+            return
+        self._cast_busy = True
+        self.ws_picker.setEnabled(False)
+        self._cast_note(f"moving the panel to workspace {ws}...")
+        rpc = self._cast_rpc()
+
+        def done(r):
+            if isinstance(r, Exception):
+                self._cast_finished(str(r), True)
+            else:
+                self.ws_picker.set_selected(ws)
+                self._save_cast_pref("cast_ws", ws)
+                self._cast_finished(f"panel locked to workspace {ws}")
+        run_async(self, lambda: K.set_workspace(rpc, ws), done)
+
+    def _on_cast_clicked(self):
+        if self._cast_busy:
+            return
+        self._cast_busy = True
+        self.cast_button.setEnabled(False)
+        rpc = self._cast_rpc()
+        if (self._status or {}).get("cast"):
+            self._cast_note("stopping...")
+            run_async(self, lambda: K.stop(rpc),
+                      lambda r: self._cast_finished(str(r) if isinstance(r, Exception) else "", isinstance(r, Exception)))
+        else:
+            output, zoom, mouse = self.cast_source.currentData(), float(self.cast_scale.value()), bool(self.cast_mouse.on)
+            ws = self.ws_picker.selected
+            self._cast_note("starting...")
+
+            def done(r):
+                if isinstance(r, Exception):
+                    self._cast_finished(str(r), True)
+                else:
+                    self._cast_finished(f"casting {r}" + ("" if output else f" on workspace {ws}"))
+            run_async(self, lambda: K.start(rpc, output=output, zoom=zoom, ws=ws, reachable=mouse), done)
+
+    def _on_mouse_toggled(self, on: bool):
+        """Applies live while a virtual monitor is running; otherwise it is the setting for the next start."""
+        on = bool(on)
+        self._save_cast_pref("cast_mouse", on)
+        state = K.load_state()
+        if not ((self._status or {}).get("cast") and state and state.get("created")):
+            return
+        if state.get("reachable") is on or self._cast_busy:
+            return
+        self._cast_busy = True
+        self._cast_note("letting the mouse cross onto the panel..." if on else "taking the panel out of the mouse's reach...")
+
+        def done(r):
+            self._cast_busy = False
+            if isinstance(r, Exception):
+                self._cast_finished(str(r), True)
+                self._sync_mouse_toggle()
+            else:
+                self._cast_finished("the mouse can cross onto the panel (move it past the right edge of your screen)"
+                                    if on else "the panel is out of the mouse's reach")
+        run_async(self, lambda: K.set_mouse_reach(on), done)
+
+    def _sync_mouse_toggle(self):
+        """Show what the running virtual monitor really does (it may have been changed from the CLI)."""
+        state = K.load_state()
+        if state and state.get("created") and state.get("reachable") is not None and not self._cast_busy:
+            want = bool(state["reachable"])
+            if want != self.cast_mouse.on:
+                self.cast_mouse.blockSignals(True)
+                self.cast_mouse.set_on(want)
+                self.cast_mouse.blockSignals(False)
+                self._save_cast_pref("cast_mouse", want)
+
+    def _restart_cast_soon(self):
+        if (self._status or {}).get("cast"):
+            self._cast_note("applying in a moment...")
+            self._restart_timer.start(600)   # debounce: a slider/segment can change several times in a row
+
+    def _restart_cast(self):
+        """Source or zoom changed while casting: restart the cast with the new settings (one clean stop + start)."""
+        if not (self._status or {}).get("cast"):
+            return
+        if self._cast_busy:
+            self._restart_timer.start(400)
+            return
+        self._cast_busy = True
+        self.cast_button.setEnabled(False)
+        self.ws_picker.setEnabled(False)
+        output, zoom, mouse = self.cast_source.currentData(), float(self.cast_scale.value()), bool(self.cast_mouse.on)
+        ws = self.ws_picker.selected
+        self._cast_note("switching...")
+        rpc = self._cast_rpc()
+
+        def work():
+            return K.start(rpc, output=output, zoom=zoom, ws=ws, reachable=mouse)   # start() stops the old cast first
+
+        def done(r):
+            if isinstance(r, Exception):
+                self._cast_finished(str(r), True)
+            else:
+                self._cast_finished(f"casting {r}" + ("" if output else f" on workspace {ws}"))
+        run_async(self, work, done)
+
+    def _on_cast_launch(self):
+        text = self.cast_cmd.text().strip()
+        if not text:
+            return
+        try:
+            argv = shlex.split(text)
+        except ValueError as e:
+            self._cast_note(f"cannot parse that command: {e}", True)
+            return
+
+        def done(r):
+            self._cast_note(str(r) if isinstance(r, Exception) else f"opened {argv[0]} on the pump",
+                            isinstance(r, Exception))
+            if not isinstance(r, Exception):
+                self.cast_cmd.clear()
+        run_async(self, lambda: K.run(argv), done)
+
+    def _apply_cast_status(self, st: dict):
+        st = st or {}
+        cast = st.get("cast")
+        state = K.load_state() if cast else None   # tiny local file: which workspace the panel is locked to
+        ws = state.get("ws") if state and state.get("created") else None
+        fps = float(st.get("stream_fps", 0) or 0)
+        self.cast_chip.set(f"LIVE {cast}" if cast else "CAST OFF", W.LIVE if cast else W.MUTED)
+        self.cast_chip.set_pulse(bool(cast))
+        self.pill_cast.set("CAST LIVE" if cast else "CAST OFF", W.LIVE if cast else W.MUTED)
+        self.pill_cast.set_pulse(bool(cast))
+        self.nav.set_badge(2, "" if cast else None, W.LIVE)
+        self.stage.set_live(bool(cast), f"WS {ws}" if ws else str(cast or ""))
+        if cast:
+            self.cast_state.setText(f"LIVE  ·  {cast}")
+            self.cast_detail.setText(f"{fps:.0f} fps" + (f"  ·  panel locked to workspace {ws}" if ws else "  ·  mirroring a real output"))
+            if ws and not self._cast_busy and ws != self.ws_picker.selected:
+                self.ws_picker.set_selected(ws)   # changed from the CLI: follow it
+        elif not self._cast_busy:
+            self.cast_state.setText("OFFLINE")
+            self.cast_detail.setText("Use the pump as a live second monitor: a virtual 854x480 screen to drag windows "
+                                     "onto, or a mirror of a real one. Needs wf-recorder; the virtual monitor needs Hyprland.")
+        if not self._cast_busy:
+            self.cast_button.setText("Stop casting" if cast else "Start casting")
+            self.cast_button.setObjectName("danger" if cast else "primary")
+            _repolish(self.cast_button)
+        self.cast_cmd.setEnabled(bool(cast))
+        self.cast_launch.setEnabled(bool(cast))
+        mirroring = bool(cast) and not (state and state.get("created"))
+        self.cast_mouse.setEnabled(not mirroring)   # a mirrored real screen has no position of its own
+        if cast:
+            self._sync_mouse_toggle()
+        err = st.get("cast_error")
+        if cast and err and not self._cast_busy:
+            self._cast_note(f"capture problem: {err}", True)
+
     def _build_media_card(self) -> QFrame:
         frame, lay = card("MEDIA")
         self.gallery = QGridLayout()
@@ -887,7 +1276,7 @@ class MainWindow(QMainWindow):
         head = QHBoxLayout()
         head.addWidget(field_label("FRAMING & SPEED"))
         head.addStretch()
-        reset = QPushButton("Reset")
+        reset = W.NeonButton("Reset")
         reset.setCursor(Qt.CursorShape.PointingHandCursor)
         reset.setToolTip("Cover · 1.00x zoom · centered · 1.0x speed")
         reset.clicked.connect(self._reset_framing)
@@ -949,10 +1338,10 @@ class MainWindow(QMainWindow):
 
         actions = QHBoxLayout()
         actions.setSpacing(10)
-        open_btn = QPushButton("Open customize.json")
+        open_btn = W.NeonButton("Open customize.json")
         open_btn.clicked.connect(self._open_customize)
         # ASCII "..." on purpose: the bundled JZFS Sans draws U+2026 as a single dot ("Load Preset.")
-        self.preset_btn = QPushButton("Load Preset...")
+        self.preset_btn = W.NeonButton("Load Preset...")
         self.preset_btn.setObjectName("menuButton")   # QSS reserves room for the menu arrow
         self.preset_btn.setMinimumWidth(self.preset_btn.fontMetrics().horizontalAdvance("Load Preset...") + 76)
         self.preset_menu = QMenu(self.preset_btn)
@@ -1363,6 +1752,8 @@ class MainWindow(QMainWindow):
 
     def on_connection(self, ok: bool, msg: str):
         self._connected = ok
+        self.pill_daemon.set_pulse(ok)
+        self.stage.set_online(ok and self._usb)
         if ok:
             self.pill_daemon.set("DAEMON ONLINE", W.OK)
         else:
@@ -1388,11 +1779,16 @@ class MainWindow(QMainWindow):
         if "usb_connected" in st:
             self._usb = bool(st["usb_connected"])
         self.pill_usb.set("USB LINKED" if self._usb else "USB OFFLINE", W.OK if self._usb else W.BAD)
+        self.pill_usb.set_pulse(self._usb)
+        self.stage.set_online(self._connected and self._usb)
         if self._connected:
             self.pill_fps.set(f"{st.get('stream_fps', 0):.0f} FPS")
             rate = int(st.get("packets_per_min", 0))
             eng = ENGINE_SHORT.get(st.get("engine_mode", ""), "")
             self.pill_pkt.set(f"{rate / 1000:.1f}k PKT/MIN • {eng}" if rate >= 10000 else f"{rate} PKT/MIN • {eng}")
+
+        self._status = st
+        self._apply_cast_status(st)
 
         if self._fresh("engine") and st.get("engine_mode") in ENGINE_NOTES:
             self.engine_seg.set_value(st["engine_mode"])
@@ -1472,6 +1868,9 @@ class MainWindow(QMainWindow):
     def showEvent(self, e):
         super().showEvent(e)
         self._update_preview_activity()
+        if not self._revealed:
+            self._revealed = True
+            QTimer.singleShot(40, lambda: fx.reveal([self._deck] + self._page_cards[self.pages.currentIndex()], 60, 260))
 
     def hideEvent(self, e):
         super().hideEvent(e)
@@ -1480,7 +1879,10 @@ class MainWindow(QMainWindow):
     def changeEvent(self, e):
         super().changeEvent(e)
         if e.type().name == "WindowStateChange":
+            fx.Clock.instance().set_paused(self.isMinimized())
             self._update_preview_activity()
+        elif e.type().name == "ActivationChange":
+            fx.Clock.instance().set_background(not self.isActiveWindow())
 
     def closeEvent(self, e):
         if not self._quitting and self._close_to_tray and self.tray is not None:
@@ -1557,74 +1959,75 @@ QMainWindow, #root {{ background: {W.BG}; }}
 #scrollInner {{ background: transparent; }}
 QScrollArea {{ background: transparent; border: none; }}
 QScrollArea > QWidget > QWidget {{ background: transparent; }}
-#card {{ background: {W.CARD}; border: 1px solid {W.BORDER}; border-radius: 14px; }}
-#cardTitle {{ color: {W.VIOLET_HI}; font-size: 11px; font-weight: 700; letter-spacing: 3px; background: transparent; }}
-#fieldLabel {{ color: {W.MUTED}; font-size: 10px; font-weight: 600; letter-spacing: 2px; background: transparent; }}
-#bigValue {{ color: {W.CYAN}; font-size: 17px; font-weight: 700; background: transparent; }}
+#card {{ background: {W.CARD}; border: 1px solid {W.BORDER}; border-radius: 12px; }}
+#cardTitle {{ color: {W.MUTED}; font-size: 10px; font-weight: 700; letter-spacing: 2.5px; background: transparent; }}
+#fieldLabel {{ color: {W.MUTED}; font-size: 10px; font-weight: 600; letter-spacing: 1.6px; background: transparent; }}
+#bigValue {{ color: {W.TEXT}; font-size: 17px; font-weight: 700; background: transparent; }}
 QLabel {{ background: transparent; }}
 QPushButton {{
-    background: #0b0b12; border: 1px solid {W.BORDER}; border-radius: 17px;
-    padding: 7px 18px; font-weight: 600; letter-spacing: 1px; min-height: 18px;
+    background: {W.CARD_HI}; border: 1px solid {W.BORDER}; border-radius: 9px;
+    padding: 7px 16px; font-weight: 600; letter-spacing: 0.5px; min-height: 18px;
 }}
-QPushButton:hover {{ border-color: {W.VIOLET_HI}; background: #1a1230; }}
-QPushButton:pressed {{ background: #241845; }}
-QPushButton#primary {{ background: {W.VIOLET}; border-color: {W.VIOLET_HI}; color: white; }}
-QPushButton#primary:hover {{ background: {W.VIOLET_HI}; }}
-QPushButton#danger {{ border-color: #6b2a35; color: {W.BAD}; }}
-QPushButton#danger:hover {{ background: #3a1219; border-color: {W.BAD}; }}
+QPushButton:hover {{ border-color: #3b4352; background: #232834; }}
+QPushButton:pressed {{ background: #1c212b; }}
+QPushButton#primary {{ background: {W.ACCENT}; border-color: {W.ACCENT}; color: white; }}
+QPushButton#primary:hover {{ background: {W.ACCENT_HI}; border-color: {W.ACCENT_HI}; }}
+QPushButton#danger {{ border-color: #5a2a32; color: {W.BAD}; }}
+QPushButton#danger:hover {{ background: #2a171b; border-color: {W.BAD}; }}
 QPushButton#menuButton {{ padding-right: 34px; }}
 QPushButton::menu-indicator {{
     image: url({arrow_path}); subcontrol-origin: padding; subcontrol-position: right center;
     right: 14px; width: 10px; height: 10px;
 }}
-QPushButton#swatch {{ border-radius: 12px; padding: 5px 14px; }}
+QPushButton#swatch {{ border-radius: 9px; padding: 5px 14px; }}
 #deckRule {{ background: {W.BORDER}; border: none; }}
-#inspector {{ background: {W.CARD_HI}; border: 1px solid {W.CYAN}; border-radius: 14px; }}
+#inspector {{ background: {W.CARD_HI}; border: 1px solid {W.ACCENT}; border-radius: 12px; }}
 #valueBadge {{
-    background: rgba(34, 211, 238, 0.09); border: 1px solid rgba(34, 211, 238, 0.45); border-radius: 12px;
-    color: {W.CYAN}; font-size: 12px; font-weight: 700; padding: 3px 0px; letter-spacing: 1px;
+    background: rgba(79, 140, 255, 0.10); border: 1px solid rgba(79, 140, 255, 0.45); border-radius: 8px;
+    color: {W.ACCENT_HI}; font-size: 12px; font-weight: 700; padding: 3px 0px; letter-spacing: 0.8px;
 }}
 QSpinBox, QLineEdit {{
-    background: #0b0b12; border: 1px solid {W.BORDER}; border-radius: 8px; padding: 5px 6px;
-    selection-background-color: {W.VIOLET}; selection-color: white;
+    background: {W.FIELD}; border: 1px solid {W.BORDER}; border-radius: 8px; padding: 5px 8px;
+    selection-background-color: {W.ACCENT}; selection-color: white;
 }}
-QSpinBox:focus, QLineEdit:focus {{ border-color: {W.CYAN}; }}
+QSpinBox:focus, QLineEdit:focus {{ border-color: {W.ACCENT}; }}
 QSpinBox:disabled, QLineEdit:disabled {{ color: {W.DIM}; }}
 QComboBox {{
-    background: #0b0b12; border: 1px solid {W.BORDER}; border-radius: 10px; padding: 6px 12px; min-height: 20px;
+    background: {W.FIELD}; border: 1px solid {W.BORDER}; border-radius: 9px; padding: 6px 12px; min-height: 20px;
 }}
-QComboBox:hover, QComboBox:focus {{ border-color: {W.VIOLET}; }}
+QComboBox:hover {{ border-color: #3b4352; }}
+QComboBox:focus {{ border-color: {W.ACCENT}; }}
 QComboBox::drop-down {{ border: none; width: 26px; }}
 QComboBox::down-arrow {{ image: url({arrow_path}); width: 10px; height: 10px; }}
 QComboBox QAbstractItemView {{
-    background: {W.CARD}; border: 1px solid {W.VIOLET}; selection-background-color: {W.VIOLET};
+    background: {W.CARD}; border: 1px solid {W.BORDER}; selection-background-color: {W.ACCENT};
     selection-color: white; outline: none; padding: 4px;
 }}
 QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px; }}
-QScrollBar::handle:vertical {{ background: #2a2144; border-radius: 3px; min-height: 30px; }}
-QScrollBar::handle:vertical:hover {{ background: {W.VIOLET}; }}
+QScrollBar::handle:vertical {{ background: #2b313d; border-radius: 3px; min-height: 30px; }}
+QScrollBar::handle:vertical:hover {{ background: #3d4657; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 QStatusBar {{ background: transparent; color: {W.MUTED}; }}
-QToolTip {{ background: {W.CARD}; color: {W.TEXT}; border: 1px solid {W.VIOLET}; padding: 4px; }}
-QMenu {{ background: #111119; color: #ffffff; border: 1px solid {W.VIOLET}; padding: 4px; }}
-QMenu::item {{ background: transparent; color: #ffffff; padding: 6px 22px; border-radius: 6px; }}
-QMenu::item:selected {{ background: #a855f7; color: #ffffff; }}
+QToolTip {{ background: {W.CARD_HI}; color: {W.TEXT}; border: 1px solid {W.BORDER}; padding: 4px 6px; }}
+QMenu {{ background: {W.CARD}; color: {W.TEXT}; border: 1px solid {W.BORDER}; padding: 4px; }}
+QMenu::item {{ background: transparent; color: {W.TEXT}; padding: 6px 22px; border-radius: 6px; }}
+QMenu::item:selected {{ background: {W.ACCENT}; color: #ffffff; }}
 QMenu::item:disabled {{ color: {W.MUTED}; }}
 QMenu::separator {{ height: 1px; background: {W.BORDER}; margin: 4px 8px; }}
-QMessageBox, QDialog, QFileDialog {{ background: #08080c; color: #ffffff; }}
-QDialog QLabel {{ color: #ffffff; }}
-QDialog QLineEdit {{ background: #111119; color: #ffffff; border: 1px solid {W.BORDER}; border-radius: 8px; padding: 5px 8px; selection-background-color: #a855f7; }}
+QMessageBox, QDialog, QFileDialog {{ background: {W.BG}; color: {W.TEXT}; }}
+QDialog QLabel {{ color: {W.TEXT}; }}
+QDialog QLineEdit {{ background: {W.CARD}; color: {W.TEXT}; border: 1px solid {W.BORDER}; border-radius: 8px; padding: 5px 8px; selection-background-color: {W.ACCENT}; }}
 QListView, QTreeView {{
-    background: #08080c; color: #ffffff; border: 1px solid {W.BORDER}; outline: none;
-    alternate-background-color: #0d0d14; selection-background-color: #a855f7; selection-color: #ffffff;
+    background: {W.BG}; color: {W.TEXT}; border: 1px solid {W.BORDER}; outline: none;
+    alternate-background-color: {W.CARD}; selection-background-color: {W.ACCENT}; selection-color: #ffffff;
 }}
-QListView::item:hover, QTreeView::item:hover {{ background: #1a1230; }}
-QListView::item:selected, QTreeView::item:selected {{ background: #a855f7; color: #ffffff; }}
-QHeaderView::section {{ background: #111119; color: #ffffff; border: none; border-right: 1px solid {W.BORDER}; padding: 4px 8px; }}
+QListView::item:hover, QTreeView::item:hover {{ background: {W.CARD_HI}; }}
+QListView::item:selected, QTreeView::item:selected {{ background: {W.ACCENT}; color: #ffffff; }}
+QHeaderView::section {{ background: {W.CARD}; color: {W.TEXT}; border: none; border-right: 1px solid {W.BORDER}; padding: 4px 8px; }}
 QScrollBar:horizontal {{ background: transparent; height: 8px; margin: 2px; }}
-QScrollBar::handle:horizontal {{ background: #2a2144; border-radius: 3px; min-width: 30px; }}
-QScrollBar::handle:horizontal:hover {{ background: {W.VIOLET}; }}
+QScrollBar::handle:horizontal {{ background: #2b313d; border-radius: 3px; min-width: 30px; }}
+QScrollBar::handle:horizontal:hover {{ background: #3d4657; }}
 """
 
 
@@ -1635,7 +2038,7 @@ def _write_arrow() -> str:
         os.makedirs(cache, exist_ok=True)
         with open(path, "w") as f:
             f.write(f'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><path d="M1 3l4 4 4-4" fill="none" '
-                    f'stroke="{W.VIOLET_HI}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>')
+                    f'stroke="{W.ACCENT_HI}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>')
     except OSError:
         pass
     return path
@@ -1647,7 +2050,7 @@ def _find_icon() -> QIcon | None:
 
 
 def _tray_icon() -> QIcon:
-    """The app icon, or a painted violet/cyan ring when it is not installed."""
+    """The app icon, or a painted accent ring when it is not installed."""
     icon = _find_icon()
     if icon is not None and not icon.isNull():
         return icon
@@ -1655,12 +2058,33 @@ def _tray_icon() -> QIcon:
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setPen(QPen(QColor(W.VIOLET), 9, cap=Qt.PenCapStyle.RoundCap))
+    p.setPen(QPen(QColor(W.ACCENT), 9, cap=Qt.PenCapStyle.RoundCap))
     p.drawArc(QRectF(8, 8, 48, 48), -135 * 16, -270 * 16)
-    p.setPen(QPen(QColor(W.CYAN), 9, cap=Qt.PenCapStyle.RoundCap))
+    p.setPen(QPen(QColor(W.ACCENT_HI), 9, cap=Qt.PenCapStyle.RoundCap))
     p.drawArc(QRectF(8, 8, 48, 48), -135 * 16, -150 * 16)
     p.end()
     return QIcon(pm)
+
+
+def _install_crash_guard():
+    """PyQt aborts the whole process when an exception escapes a slot or event handler and sys.excepthook is the
+    default. A GUI that controls hardware should survive a bug in one handler: log it (stderr + a file) and go on."""
+    import traceback
+
+    def hook(exc_type, exc, tb):
+        text = "".join(traceback.format_exception(exc_type, exc, tb))
+        sys.stderr.write(text)
+        try:
+            path = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
+                                "lt360", "gui-errors.log")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            if os.path.exists(path) and os.path.getsize(path) > 200_000:
+                os.replace(path, path + ".1")
+            with open(path, "a") as f:
+                f.write(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n{text}")
+        except OSError:
+            pass
+    sys.excepthook = hook
 
 
 def main():
@@ -1671,6 +2095,7 @@ def main():
                     help="start minimized (hidden in the tray when a tray is available)")
     ap.add_argument("--version", action="version", version=f"lt360-gui {__version__}")
     args, qt_args = ap.parse_known_args()
+    _install_crash_guard()
 
     app = QApplication([sys.argv[0]] + qt_args)
     app.setApplicationName(APP_TITLE)

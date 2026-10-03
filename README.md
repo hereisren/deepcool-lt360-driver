@@ -21,22 +21,23 @@ over `libusb`, no kernel module or vendor tooling required.
   stickers**, plus your own shell/sysfs telemetry.
 - A **visual HUD editor**: drag elements around on the live preview and tweak
   position, size, color and text from an inline inspector.
+- **Live second monitor**: use the pump as a 854x480 screen (Hyprland virtual
+  output, or mirror any output on wlroots compositors) with about 50-70 ms latency.
 - A background daemon (`lt360d`) that reconnects automatically if the device
   is unplugged, plus a scriptable CLI (`lt360ctl`) and a native dark-themed
   GUI (`lt360-gui`) with a live mirror of what's on the pump screen, a
   **system tray** mode, and a **Waybar** module (`lt360ctl status --waybar`).
 
-### New in v0.3.0
+### New in v1.0.0
 
 | | |
 |---|---|
-| `ring`, `sparkline`, `image` widgets | Arc gauges with glow, 60 s rolling graphs of any numeric sensor, alpha-PNG badges. Two new presets: `dual_rings_hud`, `sparkline_pro`. |
-| Visual HUD Editor | **Edit HUD Layout** on the pump preview (CUSTOM HUD theme): click to select, drag or arrow-key to move, inspector for X/Y, size, color (`QColorDialog`) and text. Saves straight to `customize.json`. |
-| Media Framing & Speed | Fit (`Cover`/`Contain`), zoom, pan X/Y and playback speed in the GUI Media card, `lt360ctl framing`, and `config.json` → `"framing"`. |
-| Hardware Deck | Overlay, orientation, 180° flip, °C/°F, brightness and daemon Restart/Autostart always on screen under the preview. |
-| System tray | `lt360-gui --tray` / `--minimized`, close-to-tray, and a tray menu for themes, HUD presets, engine mode and brightness. |
-| Waybar | `lt360ctl status --waybar` prints one line of Waybar JSON. |
-| Fixes | Readout bars never repeat a metric (old `TIME CPU CPU` configs become `TIME CPU GPU`); `Load Preset...` no longer renders as `Load Preset.`; theme-card previews shrink text to fit instead of overlapping. |
+| **Second monitor** | The pump works as a live second monitor (like D-Cast on Windows): `lt360ctl cast start` or the GUI **Cast** page. A native low-latency path (about 50-70 ms, up to 30 fps) with a workspace picker, a live "mouse can enter it" switch (`lt360ctl cast mouse on\|off`) and source/zoom changes that apply while casting. See [Second monitor](#second-monitor-live-screen-cast). |
+| **Redesigned GUI** | Four pages (Display, HUD, Cast, System, `Ctrl+1..4`) in a flat graphite theme with one blue accent. Motion only where it means something: sliding selections, toggle knobs, hover fades, pulsing LIVE dots. Idle CPU is about 2% with the live preview and 0.4% without. |
+| **Stability** | A crash guard logs handler errors to `~/.local/state/lt360/gui-errors.log` instead of aborting the GUI (this fixes the workspace-picker tooltip crash). Stopping or switching a cast is instant (about 0.15 s), because the daemon keeps your media loaded during a cast. The daemon no longer leaks a zombie `wf-recorder` and two file descriptors per cast. |
+| **CPU temperature** | On Ryzen boards without `k10temp`/`zenpower` loaded, the board-level `acpitz` zone (a constant ~17 C) was shown as the CPU temperature. It is no longer used on AMD, so the readout is `N/A` instead of wrong. `install.sh` and the daemon log now tell you when `k10temp` is blacklisted (`zenpower3-dkms` does that). |
+
+The full history is in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Components
 
@@ -70,7 +71,7 @@ to check your own device against them.
 
 | Hardware | Status |
 |---|---|
-| AMD CPU (`k10temp`) + AMD Radeon dGPU with Ryzen iGPU (`amdgpu`) | Verified on real hardware |
+| AMD CPU (`k10temp`) + AMD Radeon dGPU with Ryzen iGPU (`amdgpu`) | Verified on real hardware. Without `k10temp`/`zenpower` loaded the CPU temp shows `N/A` (the board's `acpitz` zone is not used on AMD); `zenpower3-dkms` blacklists `k10temp`, so remove one of them. |
 | AMD APU-only, Intel CPU (`coretemp`), laptop thermal zones | Implemented, tested against simulated sysfs only |
 | **NVIDIA** (`nvidia-smi`) | Implemented, tested against a simulated `nvidia-smi` only; **may have bugs** |
 | **Intel Arc / Iris** (`xe`, `i915`) | Implemented, tested against simulated sysfs only; **may have bugs**; GPU load is not exposed by these drivers |
@@ -207,6 +208,35 @@ media, and `class` is `normal`, `warm` (≥70 °C), `hot` (≥85 °C), `disconne
 #custom-lt360.hot { color: #f87171; }
 #custom-lt360.offline, #custom-lt360.disconnected { color: #8b86a3; }
 ```
+
+## Second monitor (live screen cast)
+
+The panel can act as a live second monitor, like DeepCool's D-Cast on Windows. The daemon captures a Wayland
+output with `wf-recorder` straight into raw frames and always sends the newest one (stale frames are dropped, not
+queued), so latency is roughly 50-70 ms at up to 30 fps. Nothing is persisted: stopping the cast, or restarting the
+daemon, returns to your normal media.
+
+```bash
+lt360ctl cast start                  # new virtual Hyprland monitor (854x480, workspace 10) shown on the panel
+lt360ctl cast start --zoom 1.5       # bigger icons and text (1-3); the virtual screen gets less room
+lt360ctl cast start --no-mouse       # put it out of the mouse's reach (default: it sits right of your screen)
+lt360ctl cast mouse off              # ...or flip that live, while casting (cast mouse on to bring it back)
+lt360ctl cast start --output DP-1    # mirror an existing output instead (works on any wlroots compositor)
+lt360ctl cast run -- kitty           # open a program on the virtual monitor
+lt360ctl cast status
+lt360ctl cast stop                   # removes the virtual monitor again; windows on it move to your main screen
+```
+
+Starting a cast pins workspaces 1-9 to your real monitor(s) and the cast workspace (10) to the virtual one with Hyprland
+workspace rules, so a workspace shortcut pressed while the mouse is on the panel still switches your own screen
+(`hyprctl reload` clears the rules). To focus the panel from the keyboard, go to its workspace (10).
+
+`lt360-gui` has the same controls in its **Cast** page, including a workspace picker that locks the panel to the
+workspace you choose (only empty workspaces can be picked, so your own never move; it applies live, and
+`lt360ctl cast ws N` does the same from the terminal). The "Mouse can enter it" switch is live too, and changing the
+source or zoom while casting restarts the cast with the new settings. Needs `wf-recorder`; creating the virtual monitor
+needs Hyprland (`hyprctl`). Under the hood the daemon uses `set_cast` / `stop_cast` socket actions.
+Casting uses a smaller JPEG quality than media (default 75); override with `"cast_quality"` in `config.json`.
 
 ## Custom Overlays & Telemetry (`customize.json`)
 

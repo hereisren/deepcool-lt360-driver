@@ -116,6 +116,10 @@ if grep -qi AuthenticAMD /proc/cpuinfo; then
         echo "    (module already loaded)"
     else
         sudo modprobe k10temp || echo "    WARNING: modprobe k10temp failed; CPU temp may show N/A"
+        if grep -rqs '^blacklist k10temp' /usr/lib/modprobe.d /etc/modprobe.d; then
+            echo "    NOTE: k10temp is blacklisted (zenpower3-dkms does this). Remove that blacklist line, or the"
+            echo "          package, then run: sudo modprobe k10temp -- otherwise CPU temp shows N/A."
+        fi
     fi
     if [ "$(cat "$K10_CONF" 2>/dev/null)" = "k10temp" ]; then
         echo "    ($K10_CONF already present)"

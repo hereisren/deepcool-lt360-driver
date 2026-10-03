@@ -11,6 +11,7 @@ import collections
 import json
 import logging
 import os
+import re
 import socketserver
 import sys
 import threading
@@ -32,7 +33,7 @@ from lt360_common import (
 )
 from lt360_ipc import default_socket_path
 from lt360_custom import CustomManager, signature as custom_signature
-from lt360_media import PERF_MAX_FRAMES, Reel, geometry_key, load_reel
+from lt360_media import CAST_QUALITY, CastReel, PERF_MAX_FRAMES, Reel, geometry_key, load_reel
 from lt360_overlay import OverlayRenderer, THEMES, default_overlay_config, format_metric, normalize_readout
 from lt360_sensors import SensorReader
 
@@ -98,6 +99,8 @@ class State:
         self.media_path = resolve_path(media) if media else None
         self.recent_media = [resolve_path(p) for p in config.get("recent_media", []) if p][:MAX_RECENTS]
         self.reel: Reel | None = None
+        self.cast_source: str | None = None  # live screen cast (never persisted: a restart returns to media_path)
+        self.cast_stash = None  # the user's pre-baked reel, parked while casting so stopping is instant
         self.frame_index = 0
         self.settings_dirty = True  # forces a cmd_settings resend on next loop tick / reconnect
 
@@ -195,6 +198,8 @@ class State:
                              max_frames=self.perf_max_frames, framing=framing)  # off-lock
             with self.lock:
                 self.reel = reel  # atomic swap
+                self.cast_source = None
+                self.cast_stash = None
                 self.media_path = resolved
                 self.frame_index = 0
                 self.recent_media = [resolved] + [p for p in self.recent_media if p != resolved]
@@ -202,6 +207,42 @@ class State:
         self.frame_wake.set()
         if persist:
             self.save()
+
+    def _cast_quality(self) -> int:
+        return int(self.extra.get("cast_quality", CAST_QUALITY))  # unmanaged key, hand-editable
+
+    def set_cast(self, source: str):
+        """Show a live capture of a Wayland output. media_path is untouched and nothing is persisted, so
+        stopping the cast (or restarting the daemon) goes back to the user's normal media."""
+        with self.reload_lock:
+            _, dm, mirror, _engine, _overlay_on, framing = self._params()
+            reel = CastReel(source, dm, mirror, self._cast_quality(), False, framing)  # starts capturing
+            if not reel.wait_first_frame(3.0):
+                err = reel.error or "no frames received (is that an existing output name?)"
+                reel.close()
+                raise RuntimeError(f"cannot cast {source}: {err}")
+            with self.lock:
+                prev = self.reel
+                if prev is not None and not getattr(prev, "live", False) and not prev.streaming:
+                    self.cast_stash = prev  # baking it again can take seconds (performance engine); keep it
+                self.reel = reel  # atomic swap; the frame loop closes the previous streaming reel
+                self.cast_source = source
+                self.frame_index = 0
+        self.frame_wake.set()
+
+    def stop_cast(self):
+        with self.reload_lock:
+            with self.lock:
+                reel, self.cast_stash = self.cast_stash, None
+            if reel is None:  # nothing parked (streamed video, or settings changed meanwhile): load it again
+                path, dm, mirror, engine, overlay_on, framing = self._params()
+                reel = load_reel(path, dm, mirror, engine, with_canvas=overlay_on,
+                                 max_frames=self.perf_max_frames, framing=framing) if path else None  # off-lock
+            with self.lock:
+                self.reel = reel
+                self.cast_source = None
+                self.frame_index = 0
+        self.frame_wake.set()
 
     def reconfigure(self, display_model: int | None = None, is_mirror: bool | None = None,
                     overlay_patch: dict | None = None, engine_mode: str | None = None,
@@ -225,7 +266,13 @@ class State:
             if streaming and new_framing["speed"] != framing["speed"]:
                 rebake = True
             reel = None
-            if path and rebake:
+            with self.lock:
+                casting = self.cast_source
+            if casting and rebake:
+                reel = CastReel(casting, new_dm, new_mirror, self._cast_quality(), False, new_framing)
+                with self.lock:
+                    self.cast_stash = None  # baked for the old settings
+            elif path and rebake:
                 reel = load_reel(path, new_dm, new_mirror, new_engine, with_canvas=new_overlay_on,
                                  max_frames=self.perf_max_frames, framing=new_framing)  # off-lock
             with self.lock:
@@ -266,6 +313,8 @@ class State:
                 "framing": dict(self.framing),
                 "packets_per_min": pkts_per_min,
                 "media": self.media_path,
+                "cast": self.cast_source,
+                "cast_error": getattr(self.reel, "error", "") if self.cast_source else "",
                 "recent_media": list(self.recent_media),
                 "streaming": streaming,
                 "frames": len(self.reel) if self.reel and not streaming else 0,
@@ -544,6 +593,8 @@ def frame_loop(device: Device, state: State, stop_event: threading.Event):
                     state.stream_fps = fps_window_frames / (now - fps_window_start)
                     fps_window_start, fps_window_frames = now, 0
 
+                if getattr(reel, "live", False):
+                    continue  # read_raw() blocks until the next NEW frame: sending asap is the pacing
                 if reel.streaming:
                     stream_due += duration
                     if stream_due < now - 0.25:  # fell behind (slow encode / stall): resync, don't burst
@@ -619,6 +670,17 @@ def dispatch(request: dict, state: State, device: Device) -> dict:
 
     if action == "set_media":
         state.set_media(request["path"])
+        return {"ok": True, "status": state.status()}
+
+    if action == "set_cast":
+        source = str(request.get("source", ""))
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", source):  # a Wayland output name, e.g. DP-1, HEADLESS-2
+            return {"ok": False, "error": "source must be a Wayland output name such as DP-1"}
+        state.set_cast(source)
+        return {"ok": True, "status": state.status()}
+
+    if action == "stop_cast":
+        state.stop_cast()
         return {"ok": True, "status": state.status()}
 
     if action == "remove_recent":

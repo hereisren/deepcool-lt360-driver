@@ -15,6 +15,8 @@ import logging
 import os
 import shutil
 import subprocess
+import tempfile
+import threading
 from dataclasses import dataclass, field
 
 from PIL import Image, ImageSequence
@@ -38,6 +40,10 @@ PERF_VIDEO_FPS = 15
 PERF_MAX_FRAMES = PERF_VIDEO_FPS * 30  # >= 30 s of video
 # full mode: streamed, so only the frame rate is bounded.
 STREAM_MAX_FPS = 20
+# live screen cast (wf-recorder): captured this fast, but only the newest frame is ever sent, so the real
+# rate is whatever JPEG encoding + USB can sustain. A low JPEG quality keeps both cheap.
+CAST_FPS = 30
+CAST_QUALITY = 75
 
 
 def is_video(path: str) -> bool:
@@ -166,6 +172,128 @@ class VideoStreamReel:
             proc.wait(timeout=5)
         except Exception:
             pass
+
+
+class CastReel:
+    """Live screen cast: wf-recorder captures a Wayland output and writes raw RGB24 canvas frames straight
+    into a pipe (no ffmpeg, no files). A reader thread keeps only the NEWEST frame, so a slow USB/encode step
+    drops frames instead of queueing them: latency stays at about one frame instead of growing with a backlog.
+    Used only from the frame-loop thread; `close()` must be called when swapped out.
+    """
+    streaming = True
+    live = True  # the frame loop must not pace this reel: read_raw() already blocks for the next new frame
+
+    def __init__(self, source: str, display_model: int, is_mirror: bool, quality: int = CAST_QUALITY,
+                 optimize: bool = False, framing: dict | None = None, fps: int = CAST_FPS):
+        if shutil.which("wf-recorder") is None:
+            raise RuntimeError("wf-recorder is required for screen casting but was not found")
+        self.source, self.display_model, self.is_mirror = source, display_model, is_mirror
+        self.quality, self.optimize = quality, optimize
+        self.framing = normalize_framing(framing)
+        self.fps = fps
+        self.path = f"cast:{source}"
+        self.size = canvas_size(display_model)
+        self._frame_bytes = self.size[0] * self.size[1] * 3
+        self.error = ""
+        self._cond = threading.Condition()
+        self._latest = bytes(self._frame_bytes)  # black until the first captured frame
+        self._seq = self._seen = 0
+        self._closed = False
+        self._proc = None
+        self._thread = threading.Thread(target=self._run, name="cast-reader", daemon=True)
+        self._thread.start()
+
+    def __len__(self):
+        return 1
+
+    def _command(self) -> list[str]:
+        w, h = self.size
+        return ["wf-recorder", "-y", "-o", self.source, "-D", "-r", str(self.fps),
+                "-c", "rawvideo", "-m", "rawvideo", "-x", "rgb24",
+                "-F", ffmpeg_frame_filter(w, h, self.framing), "-f", "/dev/stdout"]
+
+    @staticmethod
+    def _reap(proc, errlog):
+        """End wf-recorder and release everything it held (zombie, stdout pipe, stderr temp file)."""
+        try:
+            if proc is not None:
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait(timeout=5)
+                if proc.stdout:
+                    proc.stdout.close()
+        except Exception:
+            pass
+        try:
+            if errlog is not None:
+                errlog.close()
+        except Exception:
+            pass
+
+    def _run(self):
+        failures = 0
+        while not self._closed:
+            frames = 0
+            errlog = None
+            try:
+                errlog = tempfile.TemporaryFile()  # a file, not a pipe: nobody drains stderr while casting
+                self._proc = subprocess.Popen(self._command(), stdout=subprocess.PIPE, stderr=errlog)
+                log.info("casting %s at %d fps (wf-recorder pid %d)", self.source, self.fps, self._proc.pid)
+                while not self._closed:
+                    buf = self._proc.stdout.read(self._frame_bytes)
+                    if len(buf) < self._frame_bytes:
+                        break
+                    frames += 1
+                    failures = 0
+                    self.error = ""
+                    with self._cond:
+                        self._latest, self._seq = buf, self._seq + 1
+                        self._cond.notify_all()
+            except OSError as e:
+                self.error = str(e)
+            proc, self._proc = self._proc, None
+            if self._closed:
+                self._reap(proc, errlog)
+                break
+            if proc is not None:
+                try:
+                    errlog.seek(0)
+                    err = errlog.read().decode(errors="replace").strip().splitlines()
+                    if err and not frames:
+                        self.error = err[-1][:200]
+                except Exception:
+                    pass
+                self._reap(proc, errlog)
+            failures += 1
+            log.warning("cast capture of %s stopped (%s); retrying", self.source, self.error or "no error output")
+            with self._cond:
+                self._cond.wait(min(5.0, 0.5 * failures))
+
+    def wait_first_frame(self, timeout: float = 3.0) -> bool:
+        """True once a real frame arrived (set_cast uses this to reject a bad source name up front)."""
+        with self._cond:
+            return self._cond.wait_for(lambda: self._seq > 0 or self._closed, timeout) and self._seq > 0
+
+    def read_raw(self) -> bytes:
+        """The newest frame, waiting up to 1 s for one newer than the last returned. After the timeout the
+        previous frame comes back unchanged (the frame loop then only re-sends it on its heartbeat).
+        """
+        with self._cond:
+            self._cond.wait_for(lambda: self._seq != self._seen or self._closed, 1.0)
+            self._seen = self._seq
+            return self._latest
+
+    def close(self):
+        self._closed = True
+        with self._cond:
+            self._cond.notify_all()
+        proc = self._proc
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        self._thread.join(timeout=5)
 
 
 def _video_canvases(path: str, size: tuple[int, int], fps: int, max_seconds: float, framing: dict | None = None):

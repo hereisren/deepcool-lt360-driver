@@ -92,6 +92,20 @@ _CPU_THERMAL_ZONE_TYPES = ("x86_pkg_temp", "cpu-thermal", "cpu_thermal", "soc_th
 CPU_TEMP_REDISCOVER = 15.0  # seconds between retries when no sensor was found (e.g. k10temp loaded later)
 
 
+def _is_amd_cpu() -> bool:
+    try:
+        with open("/proc/cpuinfo") as f:
+            return any(l.startswith("vendor_id") and "AuthenticAMD" in l for l in f)
+    except OSError:
+        return False
+
+
+def _acpi_zone_is_cpu() -> bool:
+    """acpitz is a board-level ACPI zone. On Intel it tracks the package; on Ryzen boards it is typically a
+    fixed ~16-20 C reading that has nothing to do with the CPU, so it must never stand in for Tctl."""
+    return not _is_amd_cpu()
+
+
 def find_cpu_temp_input(hwmon_root: str = HWMON_ROOT, thermal_root: str = THERMAL_ROOT) -> str | None:
     """Path of the file holding the CPU temperature in millidegrees, or None if this machine has none."""
     chips: dict[str, list[str]] = {}
@@ -106,12 +120,19 @@ def find_cpu_temp_input(hwmon_root: str = HWMON_ROOT, thermal_root: str = THERMA
     for z in sorted(glob.glob(os.path.join(thermal_root, "thermal_zone*")), key=_natural):
         zones.setdefault(_read_text(os.path.join(z, "type")) or "", z)
     for kind in _CPU_THERMAL_ZONE_TYPES:
+        if kind == "acpitz" and not _acpi_zone_is_cpu():
+            continue
         if kind in zones and os.path.isfile(os.path.join(zones[kind], "temp")):
             return os.path.join(zones[kind], "temp")
-    for h in chips.get("acpitz", []):  # last resort: ACPI zone, usually near the CPU
+    for h in chips.get("acpitz", []) if _acpi_zone_is_cpu() else []:  # last resort: ACPI zone
         p = _pick_temp_input(h)
         if p:
             return p
+    if _is_amd_cpu() and not getattr(find_cpu_temp_input, "_warned", False):
+        find_cpu_temp_input._warned = True
+        log.warning("No AMD CPU temperature sensor (k10temp/zenpower) is loaded, so CPU temp shows N/A. "
+                    "Try `sudo modprobe k10temp`; if it is blacklisted (zenpower3-dkms does that), remove the "
+                    "blacklist or the package.")
     return None
 
 

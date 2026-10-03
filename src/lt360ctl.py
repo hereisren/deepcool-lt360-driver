@@ -9,6 +9,10 @@ Examples:
     lt360ctl engine full
     lt360ctl framing --fit cover --zoom 1.4 --pan-x -30 --speed 1.5
     lt360ctl customize --preset renmin_cyberpunk
+    lt360ctl cast start            # the panel as a live second monitor (virtual Hyprland output)
+    lt360ctl cast run -- kitty     # open a program on it
+    lt360ctl cast ws 5             # lock it to workspace 5 while casting
+    lt360ctl cast stop
     lt360ctl status
     lt360ctl status --waybar      # one-line JSON for a Waybar "custom" module
 """
@@ -148,6 +152,47 @@ def customize(args):
             sys.exit(1)
 
 
+def cast_command(args):
+    import lt360_cast as K
+
+    def rpc(request):
+        return call(args.socket, request, timeout=20.0)
+
+    try:
+        if args.action == "start":
+            if not os.path.exists(args.socket):
+                raise K.CastError(f"daemon socket not found at {args.socket} (is lt360d running?)")
+            out = K.start(rpc, output=args.output, zoom=args.zoom, ws=args.ws, reachable=args.mouse)
+            print(f"casting {out} to the panel" + ("" if args.output else f" (virtual monitor, workspace {args.ws})")
+                  + "; stop with: lt360ctl cast stop")
+        elif args.action == "stop":
+            print("cast stopped" if K.stop(rpc) else "cast was not running")
+        elif args.action == "ws":
+            if len(args.program) != 1 or not args.program[0].isdigit():
+                raise K.CastError("usage: lt360ctl cast ws N")
+            print(f"panel locked to workspace {K.set_workspace(rpc, int(args.program[0]))}")
+        elif args.action == "mouse":
+            if len(args.program) != 1 or args.program[0] not in ("on", "off"):
+                raise K.CastError("usage: lt360ctl cast mouse on|off")
+            on = K.set_mouse_reach(args.program[0] == "on")
+            print("the mouse can now cross onto the panel" if on else "the panel is out of the mouse's reach")
+        elif args.action == "run":
+            if not args.program:
+                raise K.CastError("usage: lt360ctl cast run COMMAND...")
+            K.run(args.program[1:] if args.program[0] == "--" else args.program)
+        else:
+            info = K.status(rpc)
+            print(f"casting {info['output']} at {info['fps']} fps" + (f", workspace {info['ws']}" if info["created"] else "")
+                  + (f" ({info['error']})" if info["error"] else "")
+                  if info["active"] else "not casting")
+    except K.CastError as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except OSError as e:
+        print(f"error: cannot talk to lt360d: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Control the DeepCool LT360 VISION daemon")
     ap.add_argument("--socket", default=DEFAULT_SOCKET_PATH)
@@ -193,6 +238,18 @@ def main():
     p.add_argument("--reset", action="store_true", help="restore the default customize.json")
     p.add_argument("--list", action="store_true", help="list bundled presets")
 
+    p = sub.add_parser("cast", help="use the panel as a live second monitor (needs wf-recorder; "
+                                    "virtual monitors need Hyprland)")
+    p.add_argument("action", choices=["start", "stop", "status", "run", "ws", "mouse"])
+    p.add_argument("--output", metavar="NAME", help="cast an existing output (e.g. DP-1) instead of a new virtual one")
+    p.add_argument("--zoom", type=float, default=1.0,
+                   help="virtual monitor UI zoom, 1-3 (default 1 = pixel-exact; 1.25/1.5/2 = bigger icons and text)")
+    p.add_argument("--ws", type=int, default=10, help="workspace for the virtual monitor (default 10)")
+    p.add_argument("--mouse", action=argparse.BooleanOptionalAction, default=True,
+                   help="the mouse can cross onto the virtual monitor, placed right of your screen (default); "
+                        "--no-mouse puts it out of reach so it can never take your focus")
+    p.add_argument("program", nargs="*", help="for `run`: the program to launch, after a -- (e.g. cast run -- kitty --class x)")
+
     p = sub.add_parser("preview", help="save the last streamed frame as a JPEG")
     p.add_argument("path", nargs="?", default="preview.jpg")
 
@@ -204,6 +261,9 @@ def main():
 
     if args.command == "customize":
         customize(args)
+        return
+    if args.command == "cast":
+        cast_command(args)
         return
     if args.command == "status" and args.waybar:
         print(json.dumps(waybar_status(args.socket), ensure_ascii=False), flush=True)
