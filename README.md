@@ -384,4 +384,4 @@ sudo rm -f /etc/udev/rules.d/99-deepcool-lt360.rules
 
 Built by **Ren** ([@hereisren](https://github.com/hereisren)) — *For Renmin (人民), For The People*.
 
-Developed through manual hardware reverse-engineering, live USB/LCD testing, and AI-assisted engineering using **Claude Opus 5.5**, **Gemini 3.1 Pro**, and **Claude Sonnet 5**.
+Developed through manual hardware reverse-engineering, live USB/LCD testing, and AI-assisted engineering using **Claude Opus 5.5**, **Gemini 3.1 Pro**, and **Claude Sonnet 5.5**.
