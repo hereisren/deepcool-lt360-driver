@@ -28,7 +28,7 @@ over `libusb`, no kernel module or vendor tooling required.
   GUI (`lt360-gui`) with a live mirror of what's on the pump screen, a
   **system tray** mode, and a **Waybar** module (`lt360ctl status --waybar`).
 
-### New in v1.0.0
+### New in v1.0
 
 | | |
 |---|---|

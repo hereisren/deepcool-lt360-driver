@@ -21,6 +21,7 @@ import threading
 import time
 
 from PyQt6.QtCore import QObject, QRectF, QRunnable, Qt, QThread, QThreadPool, QTimer, pyqtSignal
+from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtGui import (
     QActionGroup, QColor, QFontDatabase, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTransform,
 )
@@ -1482,6 +1483,12 @@ class MainWindow(QMainWindow):
         if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
             self.toggle_visible()
 
+    def present(self):
+        """Bring the window to the front (a second launch asks the running instance to do this)."""
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
     def toggle_visible(self):
         if self.isVisible() and not self.isMinimized():
             self.hide()
@@ -2087,6 +2094,45 @@ def _install_crash_guard():
     sys.excepthook = hook
 
 
+def _single_instance_name() -> str:
+    return f"lt360-gui-{os.getuid()}"
+
+
+def _already_running(wanted: str) -> bool:
+    """If another lt360-gui is running, tell it what this launch wanted ("show" or "tray") and return True."""
+    sock = QLocalSocket()
+    sock.connectToServer(_single_instance_name())
+    if not sock.waitForConnected(300):
+        return False
+    sock.write(wanted.encode())
+    sock.flush()
+    sock.waitForBytesWritten(300)
+    sock.disconnectFromServer()
+    return True
+
+
+def _serve_single_instance(win: "MainWindow") -> QLocalServer:
+    name = _single_instance_name()
+    QLocalServer.removeServer(name)   # a stale socket from a crashed run
+    server = QLocalServer(win)
+    server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
+
+    def on_connection():
+        while (conn := server.nextPendingConnection()) is not None:
+            def read(conn=conn):
+                if bytes(conn.readAll()).strip() == b"show":
+                    win.present()
+                conn.disconnectFromServer()
+            conn.readyRead.connect(read)
+            conn.disconnected.connect(conn.deleteLater)
+            if conn.bytesAvailable():
+                read()
+
+    server.newConnection.connect(on_connection)
+    server.listen(name)
+    return server
+
+
 def main():
     ap = argparse.ArgumentParser(prog="lt360-gui", description=f"{APP_TITLE} — desktop control for lt360d")
     ap.add_argument("--tray", action="store_true",
@@ -2098,6 +2144,8 @@ def main():
     _install_crash_guard()
 
     app = QApplication([sys.argv[0]] + qt_args)
+    if _already_running("tray" if args.tray or args.minimized else "show"):
+        return   # one instance (and one tray icon) per user; the running one raises its window
     app.setApplicationName(APP_TITLE)
     app.setApplicationVersion(__version__)
     app.setDesktopFileName("deepcool-lt360")
@@ -2107,6 +2155,7 @@ def main():
     if icon:
         app.setWindowIcon(icon)
     win = MainWindow(tray_session=args.tray)
+    win._single_server = _serve_single_instance(win)
     if win.tray is not None:
         app.setQuitOnLastWindowClosed(False)   # hidden-to-tray must not end the app; MainWindow.quit() does
     if (args.tray or args.minimized) and win.tray is not None:

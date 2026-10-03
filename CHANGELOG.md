@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.0.1 - 2026-10-04
+
+### Fixed
+- Launching the app again (from the launcher, or `lt360-gui --tray` at login) started a second instance and added a
+  second tray icon. There is now one instance per user: a second launch raises the running window and exits
+  (`--tray`/`--minimized` launches leave it as it is). A stale lock from a crash is cleaned up automatically.
+
+### Changed
+- README screenshot updated to the v1.0 GUI.
+
 ## v1.0.0 - 2026-10-04
 
 ### Added
