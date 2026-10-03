@@ -1,6 +1,6 @@
 # deepcool-lt360
 
-![LT360 VISION — For Renmin GUI](assets/gui-showcase.png)
+![LT360 VISION — For Renmin GUI](assets/gui-v1.0.1.png)
 
 
 Linux driver, daemon, CLI and native GUI for the DeepCool LT360 VISION AIO cooler's
