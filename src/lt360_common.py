@@ -9,7 +9,7 @@ import sys
 
 from PIL import Image
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 VID, PID = 0x3633, 0x002E
 EP_IMAGE = 0x02

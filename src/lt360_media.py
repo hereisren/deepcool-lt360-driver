@@ -174,6 +174,22 @@ class VideoStreamReel:
             pass
 
 
+def wayland_env() -> dict:
+    """Environment for wf-recorder. The daemon can start at login before the compositor has exported
+    WAYLAND_DISPLAY into the systemd user session, so fill in whatever is missing from the runtime dir."""
+    env = dict(os.environ)
+    runtime = env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    env["XDG_RUNTIME_DIR"] = runtime
+    if not env.get("WAYLAND_DISPLAY"):
+        try:
+            socks = sorted(n for n in os.listdir(runtime) if n.startswith("wayland-") and not n.endswith(".lock"))
+        except OSError:
+            socks = []
+        if socks:
+            env["WAYLAND_DISPLAY"] = socks[0]
+    return env
+
+
 class CastReel:
     """Live screen cast: wf-recorder captures a Wayland output and writes raw RGB24 canvas frames straight
     into a pipe (no ffmpeg, no files). A reader thread keeps only the NEWEST frame, so a slow USB/encode step
@@ -237,7 +253,8 @@ class CastReel:
             errlog = None
             try:
                 errlog = tempfile.TemporaryFile()  # a file, not a pipe: nobody drains stderr while casting
-                self._proc = subprocess.Popen(self._command(), stdout=subprocess.PIPE, stderr=errlog)
+                self._proc = subprocess.Popen(self._command(), stdout=subprocess.PIPE, stderr=errlog,
+                                              env=wayland_env())
                 log.info("casting %s at %d fps (wf-recorder pid %d)", self.source, self.fps, self._proc.pid)
                 while not self._closed:
                     buf = self._proc.stdout.read(self._frame_bytes)

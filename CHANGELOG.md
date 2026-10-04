@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.0.2 - 2026-10-04
+
+### Fixed
+- Casting failed with "failed to create display: No such file or directory" when the daemon had started at login
+  before the compositor exported `WAYLAND_DISPLAY` to the systemd user session. The daemon now finds the Wayland
+  socket in `$XDG_RUNTIME_DIR` itself when launching the capture.
+
 ## v1.0.1 - 2026-10-04
 
 ### Fixed
